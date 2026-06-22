@@ -43,18 +43,26 @@ def _truncate(text: str, max_chars: int) -> str:
     return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
 
 
-# Column widths (pixels) — must match header and data rows
+# Column widths (pixels)
 _COL_CB = 36
-_COL_NAME = 220
-_COL_PHONE = 170
 _COL_SENT = 150
+_COL_DATA_MIN = 120
 
 
-def _configure_row_grid(frame: ctk.CTkFrame) -> None:
+def _configure_dynamic_grid(frame: ctk.CTkFrame, n_data_cols: int) -> None:
+    """Configure grid: col 0 = checkbox, cols 1..n = data, col n+1 = last-sent/action."""
     frame.columnconfigure(0, minsize=_COL_CB)
-    frame.columnconfigure(1, minsize=_COL_NAME, weight=1)
-    frame.columnconfigure(2, minsize=_COL_PHONE)
-    frame.columnconfigure(3, minsize=_COL_SENT)
+    for i in range(n_data_cols):
+        frame.columnconfigure(i + 1, minsize=_COL_DATA_MIN, weight=1)
+    frame.columnconfigure(n_data_cols + 1, minsize=_COL_SENT)
+
+
+def _detect_name_column(columns: List[str]) -> Optional[str]:
+    keywords = ["nome", "name", "cliente", "contato", "contact"]
+    for col in columns:
+        if any(kw in col.lower() for kw in keywords):
+            return col
+    return None
 
 
 def _format_last_sent(iso: Optional[str]) -> str:
@@ -85,11 +93,12 @@ class ExcelImportDialog(ctk.CTkToplevel):
 
         self._file_path = file_path
         self._raw_rows: List[List[str]] = []
-        self.result: Optional[Tuple[int, str]] = None  # (header_row_0indexed, phone_col_name)
+        self.result: Optional[Tuple[int, str, List[str]]] = None  # (header_row_0indexed, phone_col, display_cols)
 
         self._header_var = tk.StringVar(value="1")
         self._phone_var = tk.StringVar(value="")
         self._columns: List[str] = []
+        self._col_vars: dict[str, tk.BooleanVar] = {}
 
         self._build()
         self._load_preview()
@@ -129,8 +138,19 @@ class ExcelImportDialog(ctk.CTkToplevel):
         phone_sel = ctk.CTkFrame(self, fg_color="transparent")
         phone_sel.pack(fill="x", **pad)
         ctk.CTkLabel(phone_sel, text="Coluna do telefone/celular:").pack(side="left")
-        self._phone_menu = ctk.CTkOptionMenu(phone_sel, variable=self._phone_var, values=["—"], width=220)
+        self._phone_menu = ctk.CTkOptionMenu(
+            phone_sel, variable=self._phone_var, values=["—"], width=220,
+            command=lambda _: self._rebuild_col_checkboxes(),
+        )
         self._phone_menu.pack(side="left", padx=8)
+
+        # Display columns selector
+        ctk.CTkLabel(
+            self, text="Colunas a exibir na lista de contatos:",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(anchor="w", padx=16, pady=(10, 2))
+        self._cols_check_frame = ctk.CTkFrame(self, fg_color=("gray85", "gray22"), corner_radius=8)
+        self._cols_check_frame.pack(fill="x", padx=16, pady=(0, 8))
 
         # Buttons
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
@@ -176,7 +196,6 @@ class ExcelImportDialog(ctk.CTkToplevel):
         row_1based = int(raw)
         header_0 = row_1based - 1
         self._render_preview(highlight_row=header_0)
-        # Derive column names from that row
         if 0 <= header_0 < len(self._raw_rows):
             self._columns = [str(c).strip() for c in self._raw_rows[header_0] if str(c).strip()]
         else:
@@ -185,6 +204,34 @@ class ExcelImportDialog(ctk.CTkToplevel):
         values = self._columns if self._columns else ["—"]
         self._phone_menu.configure(values=values)
         self._phone_var.set(detected if detected else (values[0] if values else "—"))
+        self._rebuild_col_checkboxes()
+
+    def _rebuild_col_checkboxes(self):
+        for w in self._cols_check_frame.winfo_children():
+            w.destroy()
+        self._col_vars.clear()
+        if not self._columns:
+            ctk.CTkLabel(self._cols_check_frame, text="Nenhuma coluna detectada.", text_color="gray").pack(padx=12, pady=6)
+            return
+
+        phone_col = self._phone_var.get()
+        name_col = _detect_name_column(self._columns)
+        cols_per_row = 4
+        for i, col in enumerate(self._columns):
+            is_phone = col == phone_col
+            default_on = is_phone or col == name_col
+            var = tk.BooleanVar(value=default_on)
+            self._col_vars[col] = var
+            r, c = divmod(i, cols_per_row)
+            cb = ctk.CTkCheckBox(
+                self._cols_check_frame,
+                text=_truncate(col, 18),
+                variable=var,
+                width=160,
+            )
+            if is_phone:
+                cb.configure(state="disabled")
+            cb.grid(row=r, column=c, padx=10, pady=4, sticky="w")
 
     def _confirm(self):
         raw = self._header_var.get().strip()
@@ -195,7 +242,14 @@ class ExcelImportDialog(ctk.CTkToplevel):
         if not phone_col or phone_col == "—":
             messagebox.showwarning("Atenção", "Selecione a coluna do telefone.", parent=self)
             return
-        self.result = (int(raw) - 1, phone_col)
+        # Always include phone_col; add other checked columns in original order
+        display_cols = [
+            col for col in self._columns
+            if col == phone_col or self._col_vars.get(col, tk.BooleanVar(value=False)).get()
+        ]
+        if not display_cols:
+            display_cols = [phone_col]
+        self.result = (int(raw) - 1, phone_col, display_cols)
         self.destroy()
 
 
@@ -274,6 +328,8 @@ class TabExcel(ctk.CTkFrame):
         self._contact_info: dict[str, tuple[str, str]] = {}
         # all vars in display order (contact_vars may skip duplicates, this doesn't)
         self._all_vars: list[tk.BooleanVar] = []
+        # columns chosen for display (set at import time)
+        self._display_cols: List[str] = []
 
         self._build()
 
@@ -341,10 +397,11 @@ class TabExcel(ctk.CTkFrame):
         if dialog.result is None:
             return  # user cancelled
 
-        header_row, phone_col = dialog.result
+        header_row, phone_col, display_cols = dialog.result
         try:
             data = load_excel(path, header_row=header_row, phone_column=phone_col)
             self._file_path = path
+            self._display_cols = display_cols
             self._lbl_file.configure(text=path, text_color="white")
             self._show_columns(data)
             self._load_contacts(data)
@@ -382,31 +439,37 @@ class TabExcel(ctk.CTkFrame):
         self._all_vars.clear()
 
         phone_col = data.phone_column
-        name_col = self._detect_name_column(data.columns)
+        display_cols = self._display_cols or ([phone_col] if phone_col else data.columns[:1])
+        n = len(display_cols)
+        last_col = n + 1
         profile_store = self.app.profile_store
 
         # Header row
         header = ctk.CTkFrame(self._contacts_frame, fg_color=("gray75", "gray25"))
         header.pack(fill="x", pady=(0, 2))
-        _configure_row_grid(header)
+        _configure_dynamic_grid(header, n)
         ctk.CTkLabel(header, text="", width=_COL_CB).grid(row=0, column=0, padx=(4, 0))
-        ctk.CTkLabel(header, text="Nome", anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=0, column=1, sticky="ew", padx=4, pady=4)
-        ctk.CTkLabel(header, text="Telefone", anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=0, column=2, sticky="ew", padx=4, pady=4)
-        ctk.CTkLabel(header, text="Último envio", anchor="w", font=ctk.CTkFont(weight="bold")).grid(row=0, column=3, sticky="ew", padx=4, pady=4)
+        for i, col in enumerate(display_cols):
+            ctk.CTkLabel(header, text=col, anchor="w", font=ctk.CTkFont(weight="bold")).grid(
+                row=0, column=i + 1, sticky="ew", padx=4, pady=4
+            )
+        ctk.CTkLabel(header, text="Último envio", anchor="w", font=ctk.CTkFont(weight="bold")).grid(
+            row=0, column=last_col, sticky="ew", padx=4, pady=4
+        )
 
         for row in data.rows:
             raw_phone_cell = str(row.get(phone_col, "")).strip() if phone_col else ""
-            name = str(row.get(name_col, "")).strip() if name_col else ""
+            name = str(row.get(_detect_name_column(data.columns) or "", "")).strip()
 
             if not raw_phone_cell:
-                self._add_invalid_row(name, "", row)
+                self._add_invalid_row(name, "", row, display_cols)
                 continue
 
             phone_parts = _split_phones(raw_phone_cell)
             for raw_phone in phone_parts:
                 norm_phone = _normalize_phone(raw_phone)
                 if not norm_phone or not _is_valid_phone(norm_phone):
-                    self._add_invalid_row(name, raw_phone, row)
+                    self._add_invalid_row(name, raw_phone, row, display_cols)
                     continue
 
                 profile_store.upsert_contact(norm_phone, name)
@@ -421,32 +484,57 @@ class TabExcel(ctk.CTkFrame):
 
                 row_frame = ctk.CTkFrame(self._contacts_frame, fg_color="transparent")
                 row_frame.pack(fill="x", pady=1)
-                _configure_row_grid(row_frame)
+                _configure_dynamic_grid(row_frame, n)
 
                 cb = ctk.CTkCheckBox(row_frame, text="", variable=var, width=_COL_CB)
                 cb.grid(row=0, column=0, padx=(4, 0))
 
-                ctk.CTkLabel(row_frame, text=_truncate(name, 32), anchor="w").grid(row=0, column=1, sticky="ew", padx=4, pady=2)
-                ctk.CTkLabel(row_frame, text=_format_phone(norm_phone), anchor="w").grid(row=0, column=2, sticky="ew", padx=4, pady=2)
-                ctk.CTkLabel(row_frame, text=last_sent_str, anchor="w").grid(row=0, column=3, sticky="ew", padx=4, pady=2)
+                for i, col in enumerate(display_cols):
+                    val = str(row.get(col, "")).strip()
+                    if col == phone_col:
+                        val = _format_phone(norm_phone)
+                    ctk.CTkLabel(row_frame, text=_truncate(val, 32), anchor="w").grid(
+                        row=0, column=i + 1, sticky="ew", padx=4, pady=2
+                    )
 
-    def _add_invalid_row(self, name: str, raw_phone: str, row_data: dict) -> None:
+                ctk.CTkLabel(row_frame, text=last_sent_str, anchor="w").grid(
+                    row=0, column=last_col, sticky="ew", padx=4, pady=2
+                )
+
+    def _add_invalid_row(self, name: str, raw_phone: str, row_data: dict, display_cols: List[str]) -> None:
         """Render a contact with a missing or invalid phone (checkbox disabled, edit button shown)."""
+        phone_col = self._display_cols[0] if self._display_cols else None  # phone is always first or somewhere
+        # find the actual phone col from data's phone_column (stored on ExcelData, passed via row_data context)
+        n = len(display_cols)
+        last_col = n + 1
+
         row_frame = ctk.CTkFrame(self._contacts_frame, fg_color=("gray93", "gray18"))
         row_frame.pack(fill="x", pady=1)
-        _configure_row_grid(row_frame)
+        _configure_dynamic_grid(row_frame, n)
 
         var = tk.BooleanVar(value=False)
         cb = ctk.CTkCheckBox(row_frame, text="", variable=var, width=_COL_CB, state="disabled")
         cb.grid(row=0, column=0, padx=(4, 0))
 
-        ctk.CTkLabel(row_frame, text=_truncate(name, 32), anchor="w", text_color="gray").grid(
-            row=0, column=1, sticky="ew", padx=4, pady=2
-        )
+        phone_lbl: Optional[ctk.CTkLabel] = None
+        for i, col in enumerate(display_cols):
+            val = str(row_data.get(col, "")).strip()
+            # detect which column is the phone column by checking if it matches the invalid phone
+            is_phone_col = (val == raw_phone) or (not raw_phone and not val)
+            if is_phone_col and phone_lbl is None:
+                phone_text = raw_phone if raw_phone else "sem telefone"
+                phone_lbl = ctk.CTkLabel(row_frame, text=phone_text, anchor="w", text_color="#E05252")
+                phone_lbl.grid(row=0, column=i + 1, sticky="ew", padx=4, pady=2)
+            else:
+                ctk.CTkLabel(row_frame, text=_truncate(val, 32), anchor="w", text_color="gray").grid(
+                    row=0, column=i + 1, sticky="ew", padx=4, pady=2
+                )
 
-        phone_text = raw_phone if raw_phone else "sem telefone"
-        phone_lbl = ctk.CTkLabel(row_frame, text=phone_text, anchor="w", text_color="#E05252")
-        phone_lbl.grid(row=0, column=2, sticky="ew", padx=4, pady=2)
+        if phone_lbl is None:
+            # fallback: phone not in display_cols, show error on last data col
+            phone_text = raw_phone if raw_phone else "sem telefone"
+            phone_lbl = ctk.CTkLabel(row_frame, text=phone_text, anchor="w", text_color="#E05252")
+            phone_lbl.grid(row=0, column=n, sticky="ew", padx=4, pady=2)
 
         edit_btn = ctk.CTkButton(
             row_frame,
@@ -456,10 +544,9 @@ class TabExcel(ctk.CTkFrame):
             fg_color=("gray70", "gray35"),
             hover_color=("gray60", "gray45"),
         )
-        edit_btn.grid(row=0, column=3, padx=4, pady=2, sticky="w")
-
+        edit_btn.grid(row=0, column=last_col, padx=4, pady=2, sticky="w")
         edit_btn.configure(
-            command=lambda: self._open_edit_phone(name, raw_phone, cb, var, phone_lbl, edit_btn, row_frame)
+            command=lambda: self._open_edit_phone(name, raw_phone, cb, var, phone_lbl, edit_btn, row_frame, last_col)
         )
 
     def _open_edit_phone(
@@ -471,6 +558,7 @@ class TabExcel(ctk.CTkFrame):
         phone_lbl: ctk.CTkLabel,
         edit_btn: ctk.CTkButton,
         row_frame: ctk.CTkFrame,
+        last_col: int = 3,
     ) -> None:
         dialog = EditPhoneDialog(self, name, raw_phone)
         self.wait_window(dialog)
@@ -488,7 +576,7 @@ class TabExcel(ctk.CTkFrame):
         # Replace edit button with last_sent label
         edit_btn.grid_remove()
         ctk.CTkLabel(row_frame, text=last_sent_str, anchor="w").grid(
-            row=0, column=3, sticky="ew", padx=4, pady=2
+            row=0, column=last_col, sticky="ew", padx=4, pady=2
         )
 
         # Enable checkbox and register contact
@@ -506,14 +594,6 @@ class TabExcel(ctk.CTkFrame):
             if isinstance(widget, ctk.CTkLabel) and widget.cget("text") == _truncate(name, 32):
                 widget.configure(text_color=("black", "white"))
                 break
-
-    @staticmethod
-    def _detect_name_column(columns: List[str]) -> Optional[str]:
-        keywords = ["nome", "name", "cliente", "contato", "contact"]
-        for col in columns:
-            if any(kw in col.lower() for kw in keywords):
-                return col
-        return None
 
     # ------------------------------------------------------------------
     # Selection helpers
