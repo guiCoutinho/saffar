@@ -48,35 +48,29 @@ class TabExcel(ctk.CTkFrame):
     # ------------------------------------------------------------------
 
     def _build(self):
+        top = ctk.CTkFrame(self, fg_color="transparent")
+        top.pack(fill="x", padx=20, pady=(12, 4))
+
         ctk.CTkLabel(
-            self,
+            top,
             text="1. Carregar Planilha Excel",
             font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(pady=(20, 8))
-        ctk.CTkLabel(
-            self,
-            text="Selecione o arquivo .xlsx com os contatos.",
-            text_color="gray",
-        ).pack()
+        ).pack(side="left")
 
         self._btn_open = ctk.CTkButton(
-            self, text="Selecionar arquivo Excel", command=self._open_file
+            top, text="Selecionar arquivo", width=160, command=self._open_file
         )
-        self._btn_open.pack(pady=16)
+        self._btn_open.pack(side="right")
 
         self._lbl_file = ctk.CTkLabel(self, text="Nenhum arquivo selecionado", text_color="gray")
         self._lbl_file.pack()
 
-        ctk.CTkLabel(self, text="Colunas detectadas:", font=ctk.CTkFont(weight="bold")).pack(
-            pady=(20, 4)
-        )
-
-        self._cols_frame = ctk.CTkScrollableFrame(self, height=80)
-        self._cols_frame.pack(fill="x", padx=20)
+        self._cols_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._cols_frame.pack(fill="x", padx=20, pady=(8, 0))
 
         # Action buttons row
         self._btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._btn_frame.pack(fill="x", padx=20, pady=(16, 4))
+        self._btn_frame.pack(fill="x", padx=20, pady=(8, 4))
 
         self._btn_select_all = ctk.CTkButton(
             self._btn_frame,
@@ -119,15 +113,20 @@ class TabExcel(ctk.CTkFrame):
     def _show_columns(self, data: ExcelData):
         for w in self._cols_frame.winfo_children():
             w.destroy()
+        ctk.CTkLabel(
+            self._cols_frame,
+            text="Colunas:",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(side="left", padx=(0, 6))
         for col in data.columns:
             ctk.CTkLabel(
                 self._cols_frame,
                 text=col,
                 fg_color=("gray80", "gray30"),
                 corner_radius=6,
-                padx=8,
+                padx=6,
                 pady=2,
-            ).pack(side="left", padx=4, pady=4)
+            ).pack(side="left", padx=3)
 
     # ------------------------------------------------------------------
     # Contact list
