@@ -38,7 +38,11 @@ class AppWindow(ctk.CTk):
         self.tab_excel = self._tab_excel
         self._tab_excel.pack(fill="both", expand=True)
 
-        self._tab_message = TabMessage(self._tabs.tab("✏️ Mensagem"), on_message_change=self._on_message_change)
+        self._tab_message = TabMessage(
+            self._tabs.tab("✏️ Mensagem"),
+            on_message_change=self._on_message_change,
+            profile_store=self.profile_store,
+        )
         self._tab_message.pack(fill="both", expand=True)
 
         self._tab_connect = TabConnect(self._tabs.tab("📱 WhatsApp"), bot=self._bot)

@@ -34,6 +34,10 @@ class ProfileStore:
                     status TEXT,
                     error_reason TEXT
                 );
+                CREATE TABLE IF NOT EXISTS templates (
+                    name TEXT PRIMARY KEY,
+                    body TEXT NOT NULL
+                );
             """)
 
     def upsert_contact(self, phone: str, name: str) -> None:
@@ -81,6 +85,29 @@ class ProfileStore:
         if row is None:
             return None
         return row["last_sent_at"]
+
+    # ------------------------------------------------------------------
+    # Templates
+    # ------------------------------------------------------------------
+
+    def save_template(self, name: str, body: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO templates (name, body) VALUES (?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET body = excluded.body",
+                (name.strip(), body),
+            )
+
+    def delete_template(self, name: str) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM templates WHERE name = ?", (name,))
+
+    def list_templates(self) -> list[tuple[str, str]]:
+        """Return [(name, body), ...] ordered by name."""
+        rows = self._conn.execute(
+            "SELECT name, body FROM templates ORDER BY name"
+        ).fetchall()
+        return [(r["name"], r["body"]) for r in rows]
 
     def close(self) -> None:
         self._conn.close()
