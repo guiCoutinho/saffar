@@ -1,6 +1,6 @@
 import pandas as pd
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 
 @dataclass
@@ -10,12 +10,23 @@ class ExcelData:
     phone_column: str | None = None
 
 
-def load_excel(file_path: str) -> ExcelData:
-    df = pd.read_excel(file_path, dtype=str)
+def preview_excel(file_path: str, nrows: int = 15) -> List[List[str]]:
+    """Return the first `nrows` raw rows (no header assumed) as lists of strings."""
+    df = pd.read_excel(file_path, header=None, nrows=nrows, dtype=str)
     df = df.fillna("")
+    return [list(row) for row in df.itertuples(index=False, name=None)]
+
+
+def load_excel(file_path: str, header_row: int = 0, phone_column: Optional[str] = None) -> ExcelData:
+    df = pd.read_excel(file_path, header=header_row, dtype=str)
+    df = df.fillna("")
+    # Drop completely empty columns (unnamed artifacts above the real header)
+    df.columns = [str(c).strip() for c in df.columns]
+    df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
     columns = list(df.columns)
     rows = df.to_dict(orient="records")
-    phone_column = _detect_phone_column(columns)
+    if phone_column is None:
+        phone_column = _detect_phone_column(columns)
     return ExcelData(columns=columns, rows=rows, phone_column=phone_column)
 
 
