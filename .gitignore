@@ -1,0 +1,53 @@
+# Build / distribuição
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+*.egg
+
+# Ambientes virtuais
+venv/
+.venv/
+env/
+.env/
+
+# Variáveis de ambiente e segredos
+.env
+.env.*
+*.env
+secrets.py
+config_local.py
+
+# Sessão do Playwright (dados de login do WhatsApp)
+session/
+
+# Logs e arquivos gerados
+*_log.csv
+*.log
+logs/
+
+# Screenshots e temporários
+screenshot*.png
+*.tmp
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code (arquivos internos da ferramenta)
+.claude/
+SKILL.md
+
+# Windows
+Thumbs.db
+desktop.ini
