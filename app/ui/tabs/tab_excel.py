@@ -6,7 +6,10 @@ from typing import TYPE_CHECKING, Callable, List, Optional, Tuple
 
 import customtkinter as ctk
 
-from app.core.excel_reader import ExcelData, load_excel, preview_excel, _detect_phone_column
+from app.core.excel_reader import (
+    ExcelData, UnidadeInadimplente, load_excel, preview_excel,
+    parse_inadimplentes, _detect_phone_column,
+)
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
@@ -330,6 +333,8 @@ class TabExcel(ctk.CTkFrame):
         self._all_vars: list[tk.BooleanVar] = []
         # columns chosen for display (set at import time)
         self._display_cols: List[str] = []
+        # last loaded ExcelData (needed for inadimplentes filter)
+        self._excel_data: Optional[ExcelData] = None
 
         self._build()
 
@@ -378,6 +383,17 @@ class TabExcel(ctk.CTkFrame):
         )
         self._btn_deselect_all.pack(side="left")
 
+        self._btn_inadimplentes = ctk.CTkButton(
+            self._btn_frame,
+            text="Filtrar Inadimplentes",
+            width=180,
+            fg_color=("#B5451B", "#8B3214"),
+            hover_color=("#9A3A16", "#6E2710"),
+            command=self._import_inadimplentes,
+            state="disabled",
+        )
+        self._btn_inadimplentes.pack(side="left", padx=(16, 0))
+
         # Contacts scrollable list
         self._contacts_frame = ctk.CTkScrollableFrame(self, label_text="Contatos")
         self._contacts_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
@@ -402,12 +418,85 @@ class TabExcel(ctk.CTkFrame):
             data = load_excel(path, header_row=header_row, phone_column=phone_col)
             self._file_path = path
             self._display_cols = display_cols
+            self._excel_data = data
             self._lbl_file.configure(text=path, text_color="white")
             self._show_columns(data)
             self._load_contacts(data)
             self._on_loaded(data, path)
+            self._btn_inadimplentes.configure(state="normal")
         except Exception as e:
             messagebox.showerror("Erro ao abrir arquivo", str(e))
+
+    def _import_inadimplentes(self):
+        if self._excel_data is None:
+            return
+        path = filedialog.askopenfilename(
+            title="Selecionar relatório de inadimplentes",
+            filetypes=[("Excel files", "*.xlsx *.xls")],
+        )
+        if not path:
+            return
+        try:
+            inadimplentes = parse_inadimplentes(path)
+        except Exception as e:
+            messagebox.showerror("Erro ao ler inadimplentes", str(e))
+            return
+
+        if not inadimplentes:
+            messagebox.showwarning("Atenção", "Nenhuma unidade inadimplente encontrada no arquivo.")
+            return
+
+        # Detect the unit column in the contacts data
+        unidade_col = next(
+            (c for c in self._excel_data.columns if c.strip().lower() == "unidade"), None
+        )
+        if unidade_col is None:
+            messagebox.showwarning(
+                "Atenção",
+                "A planilha de contatos não possui coluna 'Unidade'.\n"
+                "O filtro de inadimplentes requer essa coluna.",
+            )
+            return
+
+        # Build enriched rows: keep only units that appear in inadimplentes
+        new_rows = []
+        for row in self._excel_data.rows:
+            unit = str(row.get(unidade_col, "")).strip()
+            if unit in inadimplentes:
+                info = inadimplentes[unit]
+                enriched = dict(row)
+                enriched["Meses em aberto"] = ", ".join(info.competencias) if info.competencias else "—"
+                enriched["Total"] = info.total if info.total else "—"
+                new_rows.append(enriched)
+
+        if not new_rows:
+            messagebox.showinfo(
+                "Sem correspondência",
+                "Nenhum contato da planilha corresponde às unidades inadimplentes.",
+            )
+            return
+
+        # Add new columns to display list if not already there
+        new_display_cols = list(self._display_cols)
+        for col in ("Meses em aberto", "Total"):
+            if col not in new_display_cols:
+                new_display_cols.append(col)
+
+        filtered_data = ExcelData(
+            columns=self._excel_data.columns + [
+                c for c in ("Meses em aberto", "Total") if c not in self._excel_data.columns
+            ],
+            rows=new_rows,
+            phone_column=self._excel_data.phone_column,
+        )
+        self._display_cols = new_display_cols
+        self._load_contacts(filtered_data)
+        # Notifica o app para que tab_send e tab_message usem os dados filtrados/enriquecidos
+        self._on_loaded(filtered_data, self._file_path)
+        messagebox.showinfo(
+            "Filtro aplicado",
+            f"{len(new_rows)} contato(s) de {len(inadimplentes)} unidade(s) inadimplente(s) selecionado(s).",
+        )
 
     def _show_columns(self, data: ExcelData):
         for w in self._cols_frame.winfo_children():

@@ -1,5 +1,6 @@
+import re
 import pandas as pd
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 
 
@@ -23,6 +24,11 @@ def load_excel(file_path: str, header_row: int = 0, phone_column: Optional[str] 
     # Drop completely empty columns (unnamed artifacts above the real header)
     df.columns = [str(c).strip() for c in df.columns]
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
+    # Se houver coluna "Unidade", células em branco herdam o valor da primeira
+    # linha acima que não estiver em branco (forward-fill).
+    unidade_col = next((c for c in df.columns if c.strip().lower() == "unidade"), None)
+    if unidade_col:
+        df[unidade_col] = df[unidade_col].replace("", None).ffill().fillna("")
     columns = list(df.columns)
     rows = df.to_dict(orient="records")
     if phone_column is None:
@@ -36,6 +42,72 @@ def _detect_phone_column(columns: List[str]) -> str | None:
         if any(kw in col.lower() for kw in keywords):
             return col
     return None
+
+
+@dataclass
+class UnidadeInadimplente:
+    unidade: str
+    competencias: List[str] = field(default_factory=list)
+    total: str = ""
+
+
+def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
+    """Parse a relatório de inadimplentes Excel and return a dict keyed by unit number."""
+    df = pd.read_excel(file_path, header=None, dtype=str).fillna("")
+    result: Dict[str, UnidadeInadimplente] = {}
+    current: Optional[UnidadeInadimplente] = None
+    compet_idx: Optional[int] = None
+    total_idx: Optional[int] = None
+    in_data = False
+
+    for _, row in df.iterrows():
+        cells = [str(c).strip() for c in row]
+        first = cells[0] if cells else ""
+
+        # Unit header: "0407    - BRUNA RAPHAELLA..."
+        m = re.match(r'^(\d{3,6})\s*-\s*(.+)', first)
+        if m:
+            if current:
+                result[current.unidade] = current
+            current = UnidadeInadimplente(unidade=m.group(1).strip())
+            compet_idx = None
+            total_idx = None
+            in_data = False
+            continue
+
+        # Column header row contains "Compet."
+        if any("Compet" in c for c in cells):
+            try:
+                compet_idx = next(i for i, c in enumerate(cells) if "Compet" in c)
+                total_idx = next(i for i, c in enumerate(reversed(cells)) if c == "Total")
+                total_idx = len(cells) - 1 - total_idx
+            except StopIteration:
+                pass
+            in_data = True
+            continue
+
+        if not current or not in_data:
+            continue
+
+        # Total summary line for this unit: second non-empty cell is "Total"
+        non_empty = [(i, c) for i, c in enumerate(cells) if c]
+        if non_empty and non_empty[0][1] == "Total":
+            if total_idx is not None and total_idx < len(cells) and cells[total_idx]:
+                current.total = cells[total_idx]
+            elif non_empty:
+                current.total = non_empty[-1][1]
+            continue
+
+        # Data row: read competência
+        if compet_idx is not None and compet_idx < len(cells):
+            comp = cells[compet_idx]
+            if re.match(r'\d{2}/\d{4}', comp):
+                current.competencias.append(comp)
+
+    if current:
+        result[current.unidade] = current
+
+    return result
 
 
 def render_message(template: str, row: Dict[str, str]) -> str:
