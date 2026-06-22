@@ -1,21 +1,30 @@
+import re
 import time
 import random
 import threading
 import customtkinter as ctk
 from tkinter import messagebox
-from typing import Callable, Optional, List, Dict
+from typing import TYPE_CHECKING, Callable, Optional, List, Dict
 
 from app.core.excel_reader import ExcelData, render_message
 from app.core.whatsapp import WhatsAppBot
 from app.core import logger
 
+if TYPE_CHECKING:
+    from app.ui.app_window import AppWindow
+
+
+def _normalize_phone(phone: str) -> str:
+    return re.sub(r"\D", "", phone)
+
 
 class TabSend(ctk.CTkFrame):
-    def __init__(self, master, bot: WhatsAppBot, get_data: Callable, get_message: Callable[[], str]):
+    def __init__(self, master, bot: WhatsAppBot, get_data: Callable, get_message: Callable[[], str], app: "AppWindow" = None):
         super().__init__(master, fg_color="transparent")
         self._bot = bot
         self._get_data = get_data
         self._get_message = get_message
+        self._app = app
         self._log_path: Optional[str] = None
         self._failures: List[Dict] = []
         self._paused = False
@@ -86,6 +95,17 @@ class TabSend(ctk.CTkFrame):
             messagebox.showerror("Erro", "Intervalo inválido. O mínimo deve ser ≥ 1s e menor que o máximo.")
             return
 
+        # Get selected phones from Excel tab
+        selected_phones: set[str] = set()
+        if self._app is not None:
+            selected_phones = set(self._app.tab_excel.get_selected_phones())
+        else:
+            selected_phones = {_normalize_phone(str(row.get(data.phone_column, ""))) for row in data.rows}
+
+        if not selected_phones:
+            messagebox.showwarning("Atenção", "Nenhum contato selecionado. Marque pelo menos um contato na aba Excel.")
+            return
+
         self._log_path = logger.get_log_path(excel_path)
         logger.init_log(self._log_path)
         self._failures = []
@@ -93,10 +113,14 @@ class TabSend(ctk.CTkFrame):
         self._pause_event.set()
         self._btn_start.configure(state="disabled", text="Enviando...")
         self._btn_pause.configure(state="normal", text="Pausar", fg_color="#D97706", hover_color="#B45309")
-        threading.Thread(target=self._run_sending, args=(data, message_template, min_s, max_s), daemon=True).start()
+        threading.Thread(target=self._run_sending, args=(data, message_template, min_s, max_s, selected_phones), daemon=True).start()
 
-    def _run_sending(self, data: ExcelData, template: str, min_s: float, max_s: float):
-        rows = data.rows
+    def _run_sending(self, data: ExcelData, template: str, min_s: float, max_s: float, selected_phones: set):
+        # Filter rows to only those whose normalized phone is in the selected set
+        rows = [
+            row for row in data.rows
+            if _normalize_phone(str(row.get(data.phone_column, "")).strip()) in selected_phones
+        ]
         total = len(rows)
 
         for i, row in enumerate(rows):
@@ -104,6 +128,7 @@ class TabSend(ctk.CTkFrame):
             self._pause_event.wait()
 
             phone = str(row.get(data.phone_column, "")).strip()
+            norm_phone = _normalize_phone(phone)
             nome = str(row.get("nome", row.get("name", phone))).strip()
             message = render_message(template, row)
 
@@ -126,11 +151,16 @@ class TabSend(ctk.CTkFrame):
             if result["success"]:
                 self._log(f"  ✓ Enviado com sucesso.")
                 logger.log_result(self._log_path, nome, phone, True)
+                if self._app is not None:
+                    self.after(0, lambda p=norm_phone: self._app.tab_excel.uncheck_contact(p))
+                    self._app.profile_store.record_send(norm_phone, message, "success")
             else:
                 error_msg = result["error"] or "Timeout"
                 self._log(f"  ✗ Falha: {error_msg}")
                 logger.log_result(self._log_path, nome, phone, False, error_msg)
                 self._failures.append({"nome": nome, "telefone": phone, "motivo": error_msg})
+                if self._app is not None:
+                    self._app.profile_store.record_send(norm_phone, message, "failure", error_msg)
 
             self._update_progress(i + 1, total)
 

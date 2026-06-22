@@ -6,10 +6,13 @@ from typing import Optional
 
 FIELDNAMES = ["timestamp", "nome", "telefone", "status", "motivo"]
 
+_LOGS_DIR = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "logs")
+
 
 def get_log_path(excel_path: str) -> str:
-    base = os.path.splitext(excel_path)[0]
-    return f"{base}_log.csv"
+    os.makedirs(_LOGS_DIR, exist_ok=True)
+    basename = os.path.splitext(os.path.basename(excel_path))[0]
+    return os.path.join(_LOGS_DIR, f"{basename}_log.csv")
 
 
 def init_log(log_path: str) -> None:
