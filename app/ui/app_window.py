@@ -2,6 +2,7 @@ import customtkinter as ctk
 from typing import Optional, Tuple
 from app.core.excel_reader import ExcelData
 from app.core.whatsapp import WhatsAppBot
+from app.core.profile_store import ProfileStore
 from app.ui.tabs.tab_excel import TabExcel
 from app.ui.tabs.tab_message import TabMessage
 from app.ui.tabs.tab_connect import TabConnect
@@ -22,6 +23,7 @@ class AppWindow(ctk.CTk):
         self._excel_path: Optional[str] = None
         self._message: str = ""
         self._bot = WhatsAppBot()
+        self.profile_store = ProfileStore()
 
         self._build()
 
@@ -32,7 +34,8 @@ class AppWindow(ctk.CTk):
         for name in ["📂 Excel", "✏️ Mensagem", "📱 WhatsApp", "🚀 Enviar"]:
             self._tabs.add(name)
 
-        self._tab_excel = TabExcel(self._tabs.tab("📂 Excel"), on_loaded=self._on_excel_loaded)
+        self._tab_excel = TabExcel(self._tabs.tab("📂 Excel"), app=self, on_loaded=self._on_excel_loaded)
+        self.tab_excel = self._tab_excel
         self._tab_excel.pack(fill="both", expand=True)
 
         self._tab_message = TabMessage(self._tabs.tab("✏️ Mensagem"), on_message_change=self._on_message_change)
@@ -46,6 +49,7 @@ class AppWindow(ctk.CTk):
             bot=self._bot,
             get_data=self._get_data,
             get_message=self._tab_message.get_message,
+            app=self,
         )
         self._tab_send.pack(fill="both", expand=True)
 
