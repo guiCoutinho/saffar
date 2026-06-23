@@ -34,7 +34,12 @@ class TabConnect(ctk.CTkFrame):
 
     def _connect(self):
         self._btn_connect.configure(state="disabled", text="Abrindo navegador...")
-        self._lbl_info.configure(text="Aguarde enquanto o WhatsApp Web carrega...")
+        self._lbl_info.configure(
+            text="Uma janela do navegador será aberta em segundo plano.\n"
+                 "Procure por ela na barra de tarefas do Windows.\n"
+                 "Escaneie o QR Code com seu celular se solicitado.\n"
+                 "Aguarde — pode levar alguns segundos."
+        )
         self._status_dot.configure(text="● Conectando...", text_color="orange")
         self._bot.launch(on_ready=self._on_ready, on_error=self._on_error)
 
@@ -46,7 +51,9 @@ class TabConnect(ctk.CTkFrame):
     def _on_error(self, msg: str):
         self.after(0, lambda: self._status_dot.configure(text="● Erro na conexão", text_color="red"))
         self.after(0, lambda: self._btn_connect.configure(state="normal", text="Tentar novamente"))
-        self.after(0, lambda: self._lbl_info.configure(text=f"Erro: {msg}"))
+        self.after(0, lambda: self._lbl_info.configure(
+            text=f"Erro: {msg}\n\nFeche o navegador caso ainda esteja aberto e tente novamente."
+        ))
 
     def is_connected(self) -> bool:
         return self._bot.is_connected()

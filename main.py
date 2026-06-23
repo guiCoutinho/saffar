@@ -18,7 +18,12 @@ def ensure_chromium():
     ctk.set_appearance_mode("dark")
 
     ctk.CTkLabel(root, text="Configurando Saffar...", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(24, 8))
-    lbl = ctk.CTkLabel(root, text="Baixando navegador (Chromium). Aguarde...", text_color="gray")
+    lbl = ctk.CTkLabel(
+        root,
+        text="Baixando navegador (Chromium). Isso ocorre apenas na primeira vez.\nAguarde — pode levar alguns minutos...",
+        text_color="gray",
+        justify="center",
+    )
     lbl.pack()
     bar = ctk.CTkProgressBar(root, mode="indeterminate")
     bar.pack(pady=12, padx=40, fill="x")
@@ -34,7 +39,8 @@ def ensure_chromium():
             stderr=subprocess.DEVNULL,
         )
         os.makedirs(os.path.dirname(FIRST_RUN_FLAG), exist_ok=True)
-        open(FIRST_RUN_FLAG, "w").close()
+        with open(FIRST_RUN_FLAG, "w") as f:
+            f.write("")
     except Exception as e:
         lbl.configure(text=f"Erro ao instalar Chromium: {e}", text_color="red")
         bar.stop()

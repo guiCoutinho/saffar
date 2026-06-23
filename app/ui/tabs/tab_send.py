@@ -1,4 +1,3 @@
-import re
 import time
 import random
 import threading
@@ -7,15 +6,12 @@ from tkinter import messagebox
 from typing import TYPE_CHECKING, Callable, Optional, List, Dict
 
 from app.core.excel_reader import ExcelData, render_message
+from app.core.phone_utils import normalize_phone as _normalize_phone
 from app.core.whatsapp import WhatsAppBot
 from app.core import logger
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
-
-
-def _normalize_phone(phone: str) -> str:
-    return re.sub(r"\D", "", phone)
 
 
 class TabSend(ctk.CTkFrame):
@@ -155,7 +151,10 @@ class TabSend(ctk.CTkFrame):
                     self.after(0, lambda p=norm_phone: self._app.tab_excel.uncheck_contact(p))
                     self._app.profile_store.record_send(norm_phone, message, "success")
             else:
-                error_msg = result["error"] or "Timeout"
+                if not done_event.is_set():
+                    error_msg = "Timeout: sem resposta em 90s (WhatsApp Web pode estar travado)"
+                else:
+                    error_msg = result["error"] or "Erro desconhecido"
                 self._log(f"  ✗ Falha: {error_msg}")
                 logger.log_result(self._log_path, nome, phone, False, error_msg)
                 self._failures.append({"nome": nome, "telefone": phone, "motivo": error_msg})

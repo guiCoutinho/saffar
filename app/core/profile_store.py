@@ -1,14 +1,11 @@
 import os
-import re
 import sqlite3
 from datetime import datetime, timezone
 from typing import Optional
 
+from app.core.phone_utils import normalize_phone
+
 _DB_PATH = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "profiles.db")
-
-
-def _normalize_phone(phone: str) -> str:
-    return re.sub(r"\D", "", phone)
 
 
 class ProfileStore:
@@ -41,7 +38,7 @@ class ProfileStore:
             """)
 
     def upsert_contact(self, phone: str, name: str) -> None:
-        phone = _normalize_phone(phone)
+        phone = normalize_phone(phone)
         with self._conn:
             self._conn.execute(
                 """
@@ -52,6 +49,30 @@ class ProfileStore:
                 (phone, name),
             )
 
+    def upsert_contacts_batch(
+        self, contacts: list[tuple[str, str]]
+    ) -> dict[str, Optional[str]]:
+        """Upsert multiple contacts and return {phone: last_sent_at} in two DB round-trips."""
+        if not contacts:
+            return {}
+        normalized = [(normalize_phone(p), n) for p, n in contacts]
+        with self._conn:
+            self._conn.executemany(
+                """
+                INSERT INTO contacts (phone, name, last_sent_at)
+                VALUES (?, ?, NULL)
+                ON CONFLICT(phone) DO UPDATE SET name = excluded.name
+                """,
+                normalized,
+            )
+        phones = [p for p, _ in normalized]
+        placeholders = ",".join("?" * len(phones))
+        rows = self._conn.execute(
+            f"SELECT phone, last_sent_at FROM contacts WHERE phone IN ({placeholders})",
+            phones,
+        ).fetchall()
+        return {r["phone"]: r["last_sent_at"] for r in rows}
+
     def record_send(
         self,
         phone: str,
@@ -59,7 +80,7 @@ class ProfileStore:
         status: str,
         error_reason: str = "",
     ) -> None:
-        phone = _normalize_phone(phone)
+        phone = normalize_phone(phone)
         now = datetime.now(timezone.utc).isoformat()
         with self._conn:
             self._conn.execute(
@@ -78,7 +99,7 @@ class ProfileStore:
                 )
 
     def get_last_sent_at(self, phone: str) -> Optional[str]:
-        phone = _normalize_phone(phone)
+        phone = normalize_phone(phone)
         row = self._conn.execute(
             "SELECT last_sent_at FROM contacts WHERE phone = ?", (phone,)
         ).fetchone()

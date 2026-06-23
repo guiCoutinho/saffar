@@ -10,13 +10,10 @@ from app.core.excel_reader import (
     ExcelData, UnidadeInadimplente, load_excel, preview_excel,
     parse_inadimplentes, _detect_phone_column,
 )
+from app.core.phone_utils import normalize_phone as _normalize_phone
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
-
-
-def _normalize_phone(phone: str) -> str:
-    return re.sub(r"\D", "", phone)
 
 
 def _split_phones(raw: str) -> List[str]:
@@ -315,6 +312,91 @@ class EditPhoneDialog(ctk.CTkToplevel):
 
 
 # ---------------------------------------------------------------------------
+# Add contact dialog
+# ---------------------------------------------------------------------------
+
+class AddContactDialog(ctk.CTkToplevel):
+    """Dialog to manually add a single contact."""
+
+    def __init__(self, master, display_cols: List[str], phone_col: Optional[str]):
+        super().__init__(master)
+        self.title("Adicionar contato")
+        self.resizable(False, False)
+        self.grab_set()
+        self.result: Optional[Tuple[dict, str]] = None  # (row_dict, norm_phone)
+        self._display_cols = display_cols
+        self._phone_col = phone_col
+        self._extra_phone = phone_col not in (display_cols or [])
+        self._entries: dict[str, ctk.CTkEntry] = {}
+        self._build()
+        self.after(50, self._center)
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    def _build(self):
+        pad = {"padx": 24, "pady": 6}
+        ctk.CTkLabel(
+            self, text="Novo contato", font=ctk.CTkFont(size=15, weight="bold")
+        ).pack(anchor="w", padx=24, pady=(16, 8))
+
+        for col in self._display_cols:
+            hint = " (ex: 11999998888)" if col == self._phone_col else ""
+            ctk.CTkLabel(self, text=f"{col}{hint}:", anchor="w").pack(anchor="w", padx=24, pady=(4, 0))
+            entry = ctk.CTkEntry(self, width=320)
+            entry.pack(**pad)
+            self._entries[col] = entry
+
+        if self._extra_phone:
+            ctk.CTkLabel(self, text="Telefone (ex: 11999998888):", anchor="w").pack(anchor="w", padx=24, pady=(4, 0))
+            entry = ctk.CTkEntry(self, width=320, placeholder_text="DDD + número")
+            entry.pack(**pad)
+            self._entries["__phone__"] = entry
+
+        self._lbl_error = ctk.CTkLabel(self, text="", text_color="#E05252", height=18)
+        self._lbl_error.pack(padx=24)
+
+        btn_row = ctk.CTkFrame(self, fg_color="transparent")
+        btn_row.pack(fill="x", padx=24, pady=(8, 20))
+        ctk.CTkButton(
+            btn_row, text="Cancelar", width=120, fg_color="gray40", command=self.destroy
+        ).pack(side="right", padx=(8, 0))
+        ctk.CTkButton(btn_row, text="Adicionar", width=120, command=self._confirm).pack(side="right")
+
+        self.bind("<Return>", lambda _: self._confirm())
+        if self._entries:
+            self.after(100, lambda: next(iter(self._entries.values())).focus_set())
+
+    def _confirm(self):
+        row = {col: entry.get().strip() for col, entry in self._entries.items()}
+
+        # Validate that at least one non-phone field has a value
+        non_phone = [v for col, v in row.items() if col not in (self._phone_col, "__phone__")]
+        if non_phone and not any(non_phone):
+            self._lbl_error.configure(text="Informe pelo menos o nome do contato.")
+            return
+
+        phone_key = self._phone_col if not self._extra_phone else "__phone__"
+        raw = row.get(phone_key, "")
+        norm = _normalize_phone(raw)
+        if not _is_valid_phone(norm):
+            self._lbl_error.configure(text="Número inválido. Use DDD + 8 ou 9 dígitos.")
+            return
+        if norm.startswith("55") and len(norm) in (12, 13):
+            norm = norm[2:]
+
+        if self._phone_col:
+            row[self._phone_col] = norm
+        row.pop("__phone__", None)
+
+        self.result = (row, norm)
+        self.destroy()
+
+
+# ---------------------------------------------------------------------------
 # Main tab
 # ---------------------------------------------------------------------------
 
@@ -393,6 +475,36 @@ class TabExcel(ctk.CTkFrame):
             state="disabled",
         )
         self._btn_inadimplentes.pack(side="left", padx=(16, 0))
+
+        self._btn_add_contact = ctk.CTkButton(
+            self._btn_frame,
+            text="+ Adicionar contato",
+            width=160,
+            fg_color=("#1A6B35", "#14532A"),
+            hover_color=("#155829", "#0F3D1E"),
+            command=self._add_contact_manually,
+        )
+        self._btn_add_contact.pack(side="left", padx=(16, 0))
+
+        self._btn_clear = ctk.CTkButton(
+            self._btn_frame,
+            text="Limpar lista",
+            width=130,
+            fg_color=("#8B1A1A", "#6B1212"),
+            hover_color=("#6B1212", "#500E0E"),
+            command=self._clear_contacts,
+        )
+        self._btn_clear.pack(side="right")
+
+        self._btn_remove = ctk.CTkButton(
+            self._btn_frame,
+            text="Remover selecionados",
+            width=180,
+            fg_color=("#7A4A0A", "#5C3608"),
+            hover_color=("#5C3608", "#402605"),
+            command=self._remove_selected,
+        )
+        self._btn_remove.pack(side="right", padx=(0, 8))
 
         # Contacts scrollable list
         self._contacts_frame = ctk.CTkScrollableFrame(self, label_text="Contatos")
@@ -498,6 +610,79 @@ class TabExcel(ctk.CTkFrame):
             f"{len(new_rows)} contato(s) de {len(inadimplentes)} unidade(s) inadimplente(s) selecionado(s).",
         )
 
+    def _add_contact_manually(self):
+        if self._excel_data is None:
+            display_cols = ["Nome", "Telefone"]
+            phone_col = "Telefone"
+        else:
+            display_cols = self._display_cols or self._excel_data.columns[:2]
+            phone_col = self._excel_data.phone_column
+
+        dialog = AddContactDialog(self, display_cols, phone_col)
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+
+        row, norm_phone = dialog.result
+
+        if self._excel_data is None:
+            self._excel_data = ExcelData(
+                columns=display_cols,
+                rows=[row],
+                phone_column=phone_col,
+            )
+            self._display_cols = display_cols
+            self._show_columns(self._excel_data)
+            self._btn_inadimplentes.configure(state="normal")
+            self._on_loaded(self._excel_data, "")
+        else:
+            self._excel_data.rows.append(row)
+            self._on_loaded(self._excel_data, self._file_path or "")
+
+        self._load_contacts(self._excel_data)
+
+    def _remove_selected(self):
+        if self._excel_data is None:
+            return
+        selected = {phone for phone, var in self.contact_vars.items() if var.get()}
+        if not selected:
+            messagebox.showinfo("Atenção", "Nenhum contato selecionado para remover.")
+            return
+        if not messagebox.askyesno(
+            "Remover contatos",
+            f"Remover {len(selected)} contato(s) selecionado(s) da lista?",
+        ):
+            return
+        phone_col = self._excel_data.phone_column
+        new_rows = []
+        for row in self._excel_data.rows:
+            raw = str(row.get(phone_col, "")).strip() if phone_col else ""
+            phones = [_normalize_phone(p) for p in _split_phones(raw)] if raw else []
+            if not any(p in selected for p in phones):
+                new_rows.append(row)
+        self._excel_data.rows[:] = new_rows
+        self._load_contacts(self._excel_data)
+        self._on_loaded(self._excel_data, self._file_path or "")
+
+    def _clear_contacts(self):
+        if not messagebox.askyesno(
+            "Limpar lista",
+            "Tem certeza que deseja remover todos os contatos da lista?",
+        ):
+            return
+        self._excel_data = None
+        self._display_cols = []
+        self._file_path = None
+        self.contact_vars.clear()
+        self._contact_info.clear()
+        self._all_vars.clear()
+        for w in self._contacts_frame.winfo_children():
+            w.destroy()
+        for w in self._cols_frame.winfo_children():
+            w.destroy()
+        self._lbl_file.configure(text="Nenhum arquivo selecionado", text_color="gray")
+        self._btn_inadimplentes.configure(state="disabled")
+
     def _show_columns(self, data: ExcelData):
         for w in self._cols_frame.winfo_children():
             w.destroy()
@@ -553,8 +738,19 @@ class TabExcel(ctk.CTkFrame):
             font=ctk.CTkFont(weight="bold"), fg_color=hdr_color,
         ).grid(row=0, column=last_col, sticky="ew", padx=0, pady=(0, 2))
 
-        grid_row = 1
+        # Batch DB: collect valid contacts, upsert all and fetch last_sent in 2 queries
         name_col = _detect_name_column(data.columns)
+        contact_batch: list[tuple[str, str]] = []
+        for row in data.rows:
+            raw = str(row.get(phone_col, "")).strip() if phone_col else ""
+            name = str(row.get(name_col or "", "")).strip()
+            for raw_phone in (_split_phones(raw) if raw else []):
+                norm = _normalize_phone(raw_phone)
+                if norm and _is_valid_phone(norm):
+                    contact_batch.append((norm, name))
+        last_sent_map = profile_store.upsert_contacts_batch(contact_batch)
+
+        grid_row = 1
         for row in data.rows:
             raw_phone_cell = str(row.get(phone_col, "")).strip() if phone_col else ""
             name = str(row.get(name_col or "", "")).strip()
@@ -573,9 +769,7 @@ class TabExcel(ctk.CTkFrame):
                     grid_row += 1
                     continue
 
-                profile_store.upsert_contact(norm_phone, name)
-                last_sent_iso = profile_store.get_last_sent_at(norm_phone)
-                last_sent_str = _format_last_sent(last_sent_iso)
+                last_sent_str = _format_last_sent(last_sent_map.get(norm_phone))
 
                 var = tk.BooleanVar(value=True)
                 self._all_vars.append(var)

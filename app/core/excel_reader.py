@@ -21,14 +21,11 @@ def preview_excel(file_path: str, nrows: int = 15) -> List[List[str]]:
 def load_excel(file_path: str, header_row: int = 0, phone_column: Optional[str] = None) -> ExcelData:
     df = pd.read_excel(file_path, header=header_row, dtype=str)
     df = df.fillna("")
-    # Drop completely empty columns (unnamed artifacts above the real header)
     df.columns = [str(c).strip() for c in df.columns]
     df = df.loc[:, ~df.columns.str.match(r"^Unnamed")]
-    # Se houver coluna "Unidade", células em branco herdam o valor da primeira
-    # linha acima que não estiver em branco (forward-fill).
     unidade_col = next((c for c in df.columns if c.strip().lower() == "unidade"), None)
     if unidade_col:
-        df[unidade_col] = df[unidade_col].replace("", None).ffill().fillna("")
+        df[unidade_col] = df[unidade_col].mask(df[unidade_col] == "").ffill().fillna("")
     columns = list(df.columns)
     rows = df.to_dict(orient="records")
     if phone_column is None:
@@ -53,7 +50,14 @@ class UnidadeInadimplente:
 
 def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
     """Parse a relatório de inadimplentes Excel and return a dict keyed by unit number."""
-    df = pd.read_excel(file_path, header=None, dtype=str).fillna("")
+    try:
+        df = pd.read_excel(file_path, header=None, dtype=str).fillna("")
+    except Exception as e:
+        raise ValueError(f"Não foi possível ler o arquivo: {e}")
+
+    if df.empty:
+        raise ValueError("O arquivo está vazio.")
+
     result: Dict[str, UnidadeInadimplente] = {}
     current: Optional[UnidadeInadimplente] = None
     compet_idx: Optional[int] = None
@@ -64,7 +68,6 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
         cells = [str(c).strip() for c in row]
         first = cells[0] if cells else ""
 
-        # Unit header: "0407    - BRUNA RAPHAELLA..."
         m = re.match(r'^(\d{3,6})\s*-\s*(.+)', first)
         if m:
             if current:
@@ -75,7 +78,6 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
             in_data = False
             continue
 
-        # Column header row contains "Compet."
         if any("Compet" in c for c in cells):
             try:
                 compet_idx = next(i for i, c in enumerate(cells) if "Compet" in c)
@@ -89,7 +91,6 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
         if not current or not in_data:
             continue
 
-        # Total summary line for this unit: second non-empty cell is "Total"
         non_empty = [(i, c) for i, c in enumerate(cells) if c]
         if non_empty and non_empty[0][1] == "Total":
             if total_idx is not None and total_idx < len(cells) and cells[total_idx]:
@@ -98,7 +99,6 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
                 current.total = non_empty[-1][1]
             continue
 
-        # Data row: read competência
         if compet_idx is not None and compet_idx < len(cells):
             comp = cells[compet_idx]
             if re.match(r'\d{2}/\d{4}', comp):
@@ -113,5 +113,6 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
 def render_message(template: str, row: Dict[str, str]) -> str:
     message = template
     for key, value in row.items():
-        message = message.replace(f"{{{{{key}}}}}", str(value))
+        safe = "" if value is None else str(value)
+        message = message.replace(f"{{{{{key}}}}}", safe)
     return message
