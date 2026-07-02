@@ -2,6 +2,7 @@
 dist/
 build/
 *.spec
+!saffar.spec
 
 # Python
 __pycache__/
