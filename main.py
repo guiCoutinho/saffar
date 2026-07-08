@@ -1,6 +1,20 @@
 import sys
 import subprocess
 import os
+
+# Fixa o diretório dos navegadores do Playwright ANTES de qualquer uso.
+# Em apps congelados pelo PyInstaller, o Playwright define
+# PLAYWRIGHT_BROWSERS_PATH=0 por padrão (playwright/_impl/_transport.py),
+# fazendo-o procurar o Chromium dentro da pasta temporária _MEIxxxx do
+# .exe — que muda a cada execução. Já o `playwright install` baixa para
+# %LOCALAPPDATA%\ms-playwright. Sem esta linha, instalação e execução
+# apontam para lugares diferentes e o "Conectar WhatsApp" falha com
+# "Executable doesn't exist" em máquinas que só têm o .exe.
+os.environ.setdefault(
+    "PLAYWRIGHT_BROWSERS_PATH",
+    os.path.join(os.environ.get("LOCALAPPDATA", os.path.expanduser("~")), "ms-playwright"),
+)
+
 import customtkinter as ctk
 
 
@@ -24,19 +38,40 @@ def _install_chromium():
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW
 
-    subprocess.run(
+    result = subprocess.run(
         [node_exe, cli_path, "install", "chromium"],
-        check=True,
         env=get_driver_env(),
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
         creationflags=creationflags,
     )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "sem detalhes").strip()[-400:]
+        raise RuntimeError(f"playwright install retornou código {result.returncode}: {detail}")
+
+
+def _chromium_ok() -> bool:
+    """
+    Verifica se o executável do Chromium desta versão do Playwright existe
+    de fato no disco. A flag de primeira execução NÃO é confiável sozinha:
+    versões antigas do app podiam gravá-la mesmo com a instalação incompleta,
+    e o download pode ter sido interrompido em outra máquina.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            return os.path.exists(p.chromium.executable_path)
+    except Exception:
+        return False
 
 
 def ensure_chromium():
-    if os.path.exists(FIRST_RUN_FLAG):
+    if os.path.exists(FIRST_RUN_FLAG) and _chromium_ok():
         return
+
+    # Flag órfã (instalação anterior falhou ou ficou incompleta): remove e reinstala.
+    if os.path.exists(FIRST_RUN_FLAG):
+        os.remove(FIRST_RUN_FLAG)
 
     root = ctk.CTk()
     root.title("Saffar — Configuração Inicial")
@@ -60,6 +95,11 @@ def ensure_chromium():
 
     try:
         _install_chromium()
+        if not _chromium_ok():
+            raise RuntimeError(
+                "A instalação terminou, mas o executável do Chromium não foi encontrado. "
+                "Verifique a conexão com a internet e o espaço em disco, e abra o Saffar novamente."
+            )
         os.makedirs(os.path.dirname(FIRST_RUN_FLAG), exist_ok=True)
         with open(FIRST_RUN_FLAG, "w") as f:
             f.write("")
