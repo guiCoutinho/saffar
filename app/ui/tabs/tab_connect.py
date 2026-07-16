@@ -1,11 +1,15 @@
 import customtkinter as ctk
+from tkinter import messagebox
+from typing import Callable, Optional
+
 from app.core.whatsapp import WhatsAppBot
 
 
 class TabConnect(ctk.CTkFrame):
-    def __init__(self, master, bot: WhatsAppBot):
+    def __init__(self, master, bot: WhatsAppBot, is_sending: Optional[Callable[[], bool]] = None):
         super().__init__(master, fg_color="transparent")
         self._bot = bot
+        self._is_sending = is_sending
         self._build()
 
     def _build(self):
@@ -25,6 +29,17 @@ class TabConnect(ctk.CTkFrame):
             command=self._connect,
         )
         self._btn_connect.pack()
+
+        # Só aparece quando há uma sessão conectada
+        self._btn_disconnect = ctk.CTkButton(
+            self,
+            text="Desconectar / Trocar número",
+            width=200,
+            height=36,
+            fg_color="gray30",
+            hover_color="gray20",
+            command=self._disconnect,
+        )
 
         self._status_dot = ctk.CTkLabel(self, text="● Desconectado", text_color="red", font=ctk.CTkFont(size=13))
         self._status_dot.pack(pady=16)
@@ -47,6 +62,7 @@ class TabConnect(ctk.CTkFrame):
         self.after(0, lambda: self._status_dot.configure(text="● Conectado", text_color="green"))
         self.after(0, lambda: self._btn_connect.configure(text="WhatsApp conectado ✓", state="disabled"))
         self.after(0, lambda: self._lbl_info.configure(text="Pronto para enviar mensagens."))
+        self.after(0, lambda: self._btn_disconnect.pack(pady=(12, 0), before=self._status_dot))
 
     def _on_error(self, msg: str):
         self.after(0, lambda: self._status_dot.configure(text="● Erro na conexão", text_color="red"))
@@ -54,6 +70,27 @@ class TabConnect(ctk.CTkFrame):
         self.after(0, lambda: self._lbl_info.configure(
             text=f"Erro: {msg}\n\nFeche o navegador caso ainda esteja aberto e tente novamente."
         ))
+
+    def _disconnect(self):
+        if self._is_sending is not None and self._is_sending():
+            messagebox.showwarning(
+                "Atenção",
+                "Há envios em andamento. Aguarde a campanha terminar\nantes de desconectar o WhatsApp.",
+            )
+            return
+        self._btn_disconnect.configure(state="disabled", text="Desconectando...")
+        self._status_dot.configure(text="● Desconectando...", text_color="orange")
+        self._lbl_info.configure(text="Fechando o navegador e removendo a sessão salva...")
+        self._bot.disconnect(on_done=lambda: self.after(0, self._on_disconnected))
+
+    def _on_disconnected(self):
+        self._btn_disconnect.pack_forget()
+        self._btn_disconnect.configure(state="normal", text="Desconectar / Trocar número")
+        self._status_dot.configure(text="● Desconectado", text_color="red")
+        self._btn_connect.configure(state="normal", text="Conectar WhatsApp")
+        self._lbl_info.configure(
+            text="Sessão removida. Clique em Conectar e escaneie o QR Code\ncom o número que deseja usar para os envios."
+        )
 
     def is_connected(self) -> bool:
         return self._bot.is_connected()

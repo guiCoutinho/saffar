@@ -1,6 +1,7 @@
 import sys
 import subprocess
 import os
+import threading
 
 # Fixa o diretório dos navegadores do Playwright ANTES de qualquer uso.
 # Em apps congelados pelo PyInstaller, o Playwright define
@@ -91,25 +92,41 @@ def ensure_chromium():
     bar.pack(pady=12, padx=40, fill="x")
     bar.start()
 
-    root.update()
+    # O download leva minutos: rodar em thread mantém a janela responsiva
+    # (subprocess.run direto congelaria a UI e o Windows marcaria "não respondendo")
+    state = {"done": False, "error": None}
 
-    try:
-        _install_chromium()
-        if not _chromium_ok():
-            raise RuntimeError(
-                "A instalação terminou, mas o executável do Chromium não foi encontrado. "
-                "Verifique a conexão com a internet e o espaço em disco, e abra o Saffar novamente."
-            )
-        os.makedirs(os.path.dirname(FIRST_RUN_FLAG), exist_ok=True)
-        with open(FIRST_RUN_FLAG, "w") as f:
-            f.write("")
-    except Exception as e:
-        lbl.configure(text=f"Erro ao instalar Chromium: {e}", text_color="red")
-        bar.stop()
-        root.mainloop()
+    def _work():
+        try:
+            _install_chromium()
+            if not _chromium_ok():
+                raise RuntimeError(
+                    "A instalação terminou, mas o executável do Chromium não foi encontrado. "
+                    "Verifique a conexão com a internet e o espaço em disco, e abra o Saffar novamente."
+                )
+            os.makedirs(os.path.dirname(FIRST_RUN_FLAG), exist_ok=True)
+            with open(FIRST_RUN_FLAG, "w") as f:
+                f.write("")
+        except Exception as e:
+            state["error"] = e
+        state["done"] = True
+
+    def _poll():
+        if not state["done"]:
+            root.after(200, _poll)
+            return
+        if state["error"] is not None:
+            lbl.configure(text=f"Erro ao instalar Chromium: {state['error']}", text_color="red")
+            bar.stop()
+        else:
+            root.destroy()
+
+    threading.Thread(target=_work, daemon=True).start()
+    root.after(200, _poll)
+    root.mainloop()
+
+    if state["error"] is not None or not state["done"]:
         sys.exit(1)
-
-    root.destroy()
 
 
 def main():

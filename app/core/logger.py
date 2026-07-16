@@ -11,8 +11,9 @@ _LOGS_DIR = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "logs")
 
 def get_log_path(excel_path: str) -> str:
     os.makedirs(_LOGS_DIR, exist_ok=True)
-    basename = os.path.splitext(os.path.basename(excel_path))[0]
-    return os.path.join(_LOGS_DIR, f"{basename}_log.csv")
+    basename = os.path.splitext(os.path.basename(excel_path))[0] or "envios"
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(_LOGS_DIR, f"{basename}_{stamp}_log.csv")
 
 
 def init_log(log_path: str) -> None:

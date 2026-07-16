@@ -1,4 +1,3 @@
-import re
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import filedialog, messagebox
@@ -8,23 +7,20 @@ import customtkinter as ctk
 
 from app.core.excel_reader import (
     ExcelData, UnidadeInadimplente, load_excel, preview_excel,
-    parse_inadimplentes, _detect_phone_column,
+    parse_inadimplentes, _detect_phone_column, _detect_name_column,
 )
-from app.core.phone_utils import normalize_phone as _normalize_phone
+from app.core.phone_utils import (
+    normalize_phone as _normalize_phone,
+    split_phones as _split_phones,
+)
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
 
 
-def _split_phones(raw: str) -> List[str]:
-    """Split a cell that may contain multiple phones separated by ; or ,"""
-    parts = re.split(r"[;,]", raw)
-    return [p.strip() for p in parts if p.strip()]
-
-
 def _format_phone(norm: str) -> str:
     """Format a normalized (digits-only) Brazilian phone number."""
-    if len(norm) == 13 and norm.startswith("55"):
+    if len(norm) in (12, 13) and norm.startswith("55"):
         norm = norm[2:]
     if len(norm) == 11:
         return f"({norm[:2]}) {norm[2:7]}-{norm[7:]}"
@@ -55,14 +51,6 @@ def _configure_dynamic_grid(frame: ctk.CTkFrame, n_data_cols: int) -> None:
     for i in range(n_data_cols):
         frame.columnconfigure(i + 1, minsize=_COL_DATA_MIN, weight=1)
     frame.columnconfigure(n_data_cols + 1, minsize=_COL_SENT, weight=0)
-
-
-def _detect_name_column(columns: List[str]) -> Optional[str]:
-    keywords = ["nome", "name", "cliente", "contato", "contact"]
-    for col in columns:
-        if any(kw in col.lower() for kw in keywords):
-            return col
-    return None
 
 
 def _format_last_sent(iso: Optional[str]) -> str:
@@ -300,13 +288,10 @@ class EditPhoneDialog(ctk.CTkToplevel):
 
     def _confirm(self):
         raw = self._entry.get().strip()
-        norm = re.sub(r"\D", "", raw)
+        norm = _normalize_phone(raw)
         if not _is_valid_phone(norm):
             self._lbl_error.configure(text="Número inválido. Use DDD + 8 ou 9 dígitos.")
             return
-        # Normalize: strip leading 55 country code
-        if norm.startswith("55") and len(norm) in (12, 13):
-            norm = norm[2:]
         self.result = norm
         self.destroy()
 
@@ -385,8 +370,6 @@ class AddContactDialog(ctk.CTkToplevel):
         if not _is_valid_phone(norm):
             self._lbl_error.configure(text="Número inválido. Use DDD + 8 ou 9 dígitos.")
             return
-        if norm.startswith("55") and len(norm) in (12, 13):
-            norm = norm[2:]
 
         if self._phone_col:
             row[self._phone_col] = norm
@@ -771,10 +754,14 @@ class TabExcel(ctk.CTkFrame):
 
                 last_sent_str = _format_last_sent(last_sent_map.get(norm_phone))
 
-                var = tk.BooleanVar(value=True)
-                self._all_vars.append(var)
-                if norm_phone not in self.contact_vars:
+                # Telefone repetido reusa o mesmo var: marcar/desmarcar qualquer
+                # linha do número reflete em todas e no envio (que é único por número)
+                if norm_phone in self.contact_vars:
+                    var = self.contact_vars[norm_phone]
+                else:
+                    var = tk.BooleanVar(value=True)
                     self.contact_vars[norm_phone] = var
+                self._all_vars.append(var)
                 self._contact_info[norm_phone] = (name, raw_phone)
 
                 cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, bg_color=row_bg)
@@ -837,9 +824,28 @@ class TabExcel(ctk.CTkFrame):
         edit_btn.grid(row=grid_row, column=last_col, padx=4, pady=1, sticky="w")
         edit_btn.configure(
             command=lambda: self._open_edit_phone(
-                name, raw_phone, cb, var, phone_lbl, edit_btn, table, grid_row, last_col, row_bg
+                name, raw_phone, cb, var, phone_lbl, edit_btn, table, grid_row, last_col, row_bg,
+                row_data, phone_col,
             )
         )
+
+    @staticmethod
+    def _update_row_phone(row_data: dict, phone_col: Optional[str], old_raw: str, new_norm: str) -> None:
+        """Grava o telefone corrigido na linha da planilha em memória.
+
+        Sem isso o envio (que filtra pelas células de _excel_data.rows) pularia
+        o contato mesmo com o checkbox marcado. Se a célula tem vários números,
+        substitui apenas a parte editada.
+        """
+        if not phone_col:
+            return
+        cell = str(row_data.get(phone_col, "")).strip()
+        parts = _split_phones(cell)
+        if old_raw and old_raw in parts:
+            parts[parts.index(old_raw)] = new_norm
+            row_data[phone_col] = "; ".join(parts)
+        else:
+            row_data[phone_col] = new_norm
 
     def _open_edit_phone(
         self,
@@ -853,6 +859,8 @@ class TabExcel(ctk.CTkFrame):
         grid_row: int,
         last_col: int,
         row_bg: tuple,
+        row_data: dict,
+        phone_col: Optional[str],
     ) -> None:
         dialog = EditPhoneDialog(self, name, raw_phone)
         self.wait_window(dialog)
@@ -860,6 +868,7 @@ class TabExcel(ctk.CTkFrame):
             return
 
         norm_phone = dialog.result
+        self._update_row_phone(row_data, phone_col, raw_phone, norm_phone)
         self.app.profile_store.upsert_contact(norm_phone, name)
         last_sent_iso = self.app.profile_store.get_last_sent_at(norm_phone)
         last_sent_str = _format_last_sent(last_sent_iso)

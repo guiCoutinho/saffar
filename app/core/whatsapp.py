@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import time
 import random
 import queue
@@ -7,7 +8,15 @@ import threading
 from typing import Callable, Optional
 from playwright.sync_api import sync_playwright, Page, BrowserContext
 
+from app.core.phone_utils import to_wa_phone
+
 SESSION_DIR = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "session")
+
+# O WhatsApp Web já removeu atributos data-testid em atualizações passadas.
+# Cada seletor tem um fallback estrutural para sobreviver a essas mudanças.
+_SEL_CHAT_LIST = '[data-testid="chat-list"], #pane-side'
+_SEL_COMPOSE_BOX = '[data-testid="conversation-compose-box-input"], footer div[contenteditable="true"]'
+_SEL_INVALID_POPUP = '[data-testid="popup-contents"], div[data-animate-modal-popup="true"]'
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +66,25 @@ class WhatsAppBot:
         with self._lock:
             self._connected = False
 
+    def shutdown(self, timeout: float = 3.0) -> None:
+        """Encerra o navegador ao fechar o app, aguardando o worker finalizar."""
+        self.stop()
+        worker = self._worker
+        if worker is not None and worker.is_alive():
+            worker.join(timeout)
+
+    def disconnect(self, on_done: Optional[Callable[[], None]] = None) -> None:
+        """Fecha o navegador e apaga a sessão salva, permitindo conectar outro número."""
+        with self._lock:
+            worker_alive = self._worker is not None and self._worker.is_alive()
+            self._connected = False
+        if worker_alive:
+            self._queue.put(("stop", True, on_done))
+        else:
+            self._clear_session_dir()
+            if on_done:
+                on_done()
+
     # ------------------------------------------------------------------
     # Worker — roda inteiramente na thread dedicada do Playwright
     # ------------------------------------------------------------------
@@ -72,13 +100,16 @@ class WhatsAppBot:
             )
             page: Page = context.new_page()
             page.goto("https://web.whatsapp.com", timeout=30_000)
-            page.wait_for_selector('[data-testid="chat-list"]', timeout=120_000)
+            page.wait_for_selector(_SEL_CHAT_LIST, timeout=120_000)
             with self._lock:
                 self._connected = True
             on_ready()
         except Exception as e:
             on_error(str(e))
             return
+
+        clear_session = False
+        on_done: Optional[Callable] = None
 
         while True:
             try:
@@ -87,6 +118,8 @@ class WhatsAppBot:
                 continue
 
             if task[0] == "stop":
+                clear_session = len(task) > 1 and bool(task[1])
+                on_done = task[2] if len(task) > 2 else None
                 break
             elif task[0] == "send":
                 _, phone, message, on_success, on_error_cb = task
@@ -103,9 +136,26 @@ class WhatsAppBot:
             logger.warning("Erro ao fechar Playwright: %s", e)
         with self._lock:
             self._connected = False
+        if clear_session:
+            self._clear_session_dir()
+        if on_done:
+            on_done()
+
+    @staticmethod
+    def _clear_session_dir() -> None:
+        # O Chromium pode segurar arquivos por alguns instantes após fechar
+        for _ in range(5):
+            try:
+                shutil.rmtree(SESSION_DIR)
+                return
+            except FileNotFoundError:
+                return
+            except OSError:
+                time.sleep(0.5)
+        logger.warning("Não foi possível remover a pasta de sessão: %s", SESSION_DIR)
 
     def _do_send(self, page: Page, phone: str, message: str) -> None:
-        phone_clean = "".join(filter(str.isdigit, phone))
+        phone_clean = to_wa_phone(phone)
 
         try:
             page.goto(
@@ -118,14 +168,11 @@ class WhatsAppBot:
 
         _pause(1.5, 3.0)
 
-        invalid = page.query_selector('[data-testid="popup-contents"]')
+        invalid = page.query_selector(_SEL_INVALID_POPUP)
         if invalid:
             raise RuntimeError("Número não encontrado no WhatsApp.")
 
-        msg_box = page.wait_for_selector(
-            '[data-testid="conversation-compose-box-input"]',
-            timeout=20_000,
-        )
+        msg_box = page.wait_for_selector(_SEL_COMPOSE_BOX, timeout=20_000)
 
         _pause(0.5, 1.0)
         msg_box.click()

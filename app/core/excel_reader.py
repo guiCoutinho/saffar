@@ -41,6 +41,14 @@ def _detect_phone_column(columns: List[str]) -> str | None:
     return None
 
 
+def _detect_name_column(columns: List[str]) -> Optional[str]:
+    keywords = ["nome", "name", "cliente", "contato", "contact"]
+    for col in columns:
+        if any(kw in col.lower() for kw in keywords):
+            return col
+    return None
+
+
 @dataclass
 class UnidadeInadimplente:
     unidade: str

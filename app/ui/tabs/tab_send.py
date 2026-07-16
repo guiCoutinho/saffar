@@ -1,3 +1,4 @@
+import re
 import time
 import random
 import threading
@@ -5,8 +6,8 @@ import customtkinter as ctk
 from tkinter import messagebox
 from typing import TYPE_CHECKING, Callable, Optional, List, Dict
 
-from app.core.excel_reader import ExcelData, render_message
-from app.core.phone_utils import normalize_phone as _normalize_phone
+from app.core.excel_reader import ExcelData, render_message, _detect_name_column
+from app.core.phone_utils import normalize_phone as _normalize_phone, split_phones
 from app.core.whatsapp import WhatsAppBot
 from app.core import logger
 
@@ -23,6 +24,7 @@ class TabSend(ctk.CTkFrame):
         self._app = app
         self._log_path: Optional[str] = None
         self._failures: List[Dict] = []
+        self._sending = False
         self._paused = False
         self._pause_event = threading.Event()
         self._pause_event.set()
@@ -91,20 +93,37 @@ class TabSend(ctk.CTkFrame):
             messagebox.showerror("Erro", "Intervalo inválido. O mínimo deve ser ≥ 1s e menor que o máximo.")
             return
 
+        # Placeholders que não correspondem a nenhuma coluna iriam literalmente
+        # na mensagem para o cliente — avisa antes de começar
+        placeholders = set(re.findall(r"\{\{(.+?)\}\}", message_template))
+        unknown = sorted(p for p in placeholders if p not in data.columns)
+        if unknown and not messagebox.askyesno(
+            "Atenção",
+            "Os campos abaixo não existem na planilha e serão enviados como texto:\n\n"
+            + "\n".join(f"{{{{{p}}}}}" for p in unknown)
+            + "\n\nDeseja continuar mesmo assim?",
+        ):
+            return
+
         # Get selected phones from Excel tab
         selected_phones: set[str] = set()
         if self._app is not None:
             selected_phones = set(self._app.tab_excel.get_selected_phones())
         else:
-            selected_phones = {_normalize_phone(str(row.get(data.phone_column, ""))) for row in data.rows}
+            selected_phones = {
+                _normalize_phone(p)
+                for row in data.rows
+                for p in split_phones(str(row.get(data.phone_column, "")))
+            }
 
         if not selected_phones:
             messagebox.showwarning("Atenção", "Nenhum contato selecionado. Marque pelo menos um contato na aba Excel.")
             return
 
-        self._log_path = logger.get_log_path(excel_path)
+        self._log_path = logger.get_log_path(excel_path or "")
         logger.init_log(self._log_path)
         self._failures = []
+        self._sending = True
         self._paused = False
         self._pause_event.set()
         self._btn_start.configure(state="disabled", text="Enviando...")
@@ -112,20 +131,26 @@ class TabSend(ctk.CTkFrame):
         threading.Thread(target=self._run_sending, args=(data, message_template, min_s, max_s, selected_phones), daemon=True).start()
 
     def _run_sending(self, data: ExcelData, template: str, min_s: float, max_s: float, selected_phones: set):
-        # Filter rows to only those whose normalized phone is in the selected set
-        rows = [
-            row for row in data.rows
-            if _normalize_phone(str(row.get(data.phone_column, "")).strip()) in selected_phones
-        ]
-        total = len(rows)
+        # Expande células com vários telefones (";" ou ",") em um alvo por número
+        # e deduplica: cada número selecionado recebe a mensagem uma única vez
+        name_col = _detect_name_column(data.columns)
+        seen: set[str] = set()
+        targets: list[tuple[dict, str]] = []
+        for row in data.rows:
+            raw_cell = str(row.get(data.phone_column, "")).strip()
+            for part in split_phones(raw_cell):
+                norm = _normalize_phone(part)
+                if norm in selected_phones and norm not in seen:
+                    seen.add(norm)
+                    targets.append((row, norm))
+        total = len(targets)
 
-        for i, row in enumerate(rows):
+        for i, (row, norm_phone) in enumerate(targets):
             # Aguarda se estiver pausado (bloqueia até retomar)
             self._pause_event.wait()
 
-            phone = str(row.get(data.phone_column, "")).strip()
-            norm_phone = _normalize_phone(phone)
-            nome = str(row.get("nome", row.get("name", phone))).strip()
+            phone = norm_phone
+            nome = str(row.get(name_col or "", "")).strip() or norm_phone
             message = render_message(template, row)
 
             self._log(f"[{i+1}/{total}] Enviando para {nome} ({phone})...")
@@ -141,8 +166,12 @@ class TabSend(ctk.CTkFrame):
                 r["error"] = msg
                 e.set()
 
+            # A digitação simula humano (40–110 ms/caractere): mensagens longas
+            # levam mais que os 90s base e seriam marcadas como falsa falha
+            send_timeout = 90 + 0.15 * len(message)
+
             self._bot.send_message(phone, message, on_success, on_error)
-            done_event.wait(timeout=90)
+            done_event.wait(timeout=send_timeout)
 
             if result["success"]:
                 self._log(f"  ✓ Enviado com sucesso.")
@@ -152,7 +181,7 @@ class TabSend(ctk.CTkFrame):
                     self._app.profile_store.record_send(norm_phone, message, "success")
             else:
                 if not done_event.is_set():
-                    error_msg = "Timeout: sem resposta em 90s (WhatsApp Web pode estar travado)"
+                    error_msg = f"Timeout: sem resposta em {send_timeout:.0f}s (WhatsApp Web pode estar travado)"
                 else:
                     error_msg = result["error"] or "Erro desconhecido"
                 self._log(f"  ✗ Falha: {error_msg}")
@@ -170,7 +199,11 @@ class TabSend(ctk.CTkFrame):
 
         self.after(0, self._on_done)
 
+    def is_sending(self) -> bool:
+        return self._sending
+
     def _on_done(self):
+        self._sending = False
         self._btn_start.configure(state="normal", text="Iniciar Envios")
         self._btn_pause.configure(state="disabled", text="Pausar", fg_color="gray40", hover_color="gray30")
         self._paused = False
