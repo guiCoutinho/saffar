@@ -2,6 +2,7 @@ import json
 import os
 import re
 import threading
+from datetime import datetime
 import customtkinter as ctk
 from tkinter import messagebox
 from typing import Optional, Tuple
@@ -162,16 +163,42 @@ class AppWindow(ctk.CTk):
     # Atualização automática
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _updater_log(msg: str):
+        """Registra o resultado da verificação para diagnóstico em campo."""
+        try:
+            path = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "logs", "updater.log")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+        except OSError:
+            pass
+
     def _check_updates_async(self):
+        # A thread só grava o resultado; quem toca na UI é o polling via after()
+        # na thread principal — after() disparado de outra thread é instável
+        # no app empacotado
+        result = {"info": None, "done": False}
+
         def work():
             try:
-                info = updater.check_for_update()
-            except Exception:
-                return  # sem internet / API indisponível: segue normalmente
-            if info is not None:
-                self.after(0, lambda: self._prompt_update(info))
+                result["info"] = updater.check_for_update()
+                self._updater_log(f"verificação ok: {result['info']}")
+            except Exception as e:
+                self._updater_log(f"falha na verificação: {e!r}")
+            finally:
+                result["done"] = True
 
         threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            if not result["done"]:
+                self.after(500, poll)
+                return
+            if result["info"] is not None:
+                self._prompt_update(result["info"])
+
+        self.after(500, poll)
 
     def _prompt_update(self, info: "updater.UpdateInfo"):
         if not messagebox.askyesno(
@@ -179,6 +206,7 @@ class AppWindow(ctk.CTk):
             f"Uma nova versão do Saffar está disponível: v{info.version}\n"
             f"(você está usando a v{__version__}).\n\n"
             "Atualizar agora? O aplicativo será reiniciado ao final do download.",
+            parent=self,
         ):
             return
 
@@ -195,15 +223,29 @@ class AppWindow(ctk.CTk):
         bar.pack()
         bar.start()
 
+        state = {"done": False, "new_exe": None, "error": None}
+
         def work():
             try:
-                new_exe = updater.download_update(info)
+                state["new_exe"] = updater.download_update(info)
             except Exception as e:
-                self.after(0, lambda: self._update_failed(win, e))
-                return
-            self.after(0, lambda: self._finish_update(win, new_exe))
+                state["error"] = e
+            state["done"] = True
 
         threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            if not state["done"]:
+                self.after(300, poll)
+                return
+            if state["error"] is not None:
+                self._updater_log(f"falha no download: {state['error']!r}")
+                self._update_failed(win, state["error"])
+            else:
+                self._updater_log(f"download concluído: {state['new_exe']}")
+                self._finish_update(win, state["new_exe"])
+
+        self.after(300, poll)
 
     def _update_failed(self, win, error: Exception):
         win.destroy()

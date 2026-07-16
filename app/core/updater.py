@@ -70,6 +70,11 @@ def download_update(info: UpdateInfo, timeout: float = 60.0) -> str:
 
 
 def _build_update_script(pid: int, new_exe: str, exe_path: str) -> str:
+    # O move só funciona depois que o bootloader do PyInstaller (processo pai)
+    # solta o .exe, o que leva alguns segundos após o fechamento — daí as 30
+    # tentativas. O timeout após o move dá tempo do antivírus terminar de
+    # escanear o arquivo novo; reabrir cedo demais causa "Failed to load
+    # Python DLL" na extração do onefile.
     return f"""@echo off
 setlocal enabledelayedexpansion
 :wait
@@ -80,11 +85,12 @@ set tries=0
 move /y "{new_exe}" "{exe_path}" >nul 2>&1
 if errorlevel 1 (
     set /a tries+=1
-    if !tries! lss 10 (
+    if !tries! lss 30 (
         timeout /t 1 /nobreak >nul
         goto swap
     )
 )
+timeout /t 5 /nobreak >nul
 start "" "{exe_path}"
 del "%~f0"
 """
