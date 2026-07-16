@@ -4,6 +4,7 @@ import customtkinter as ctk
 from tkinter import messagebox
 from typing import Optional, Tuple
 from app.core import updater
+from app.core.resources import icon_path
 from app.core.excel_reader import ExcelData
 from app.core.whatsapp import WhatsAppBot
 from app.core.profile_store import ProfileStore
@@ -23,6 +24,7 @@ class AppWindow(ctk.CTk):
         self.title(f"Saffar — Automação WhatsApp  v{__version__}")
         self.geometry("700x600")
         self.resizable(True, True)
+        self._apply_icon()
 
         self._data: Optional[ExcelData] = None
         self._excel_path: Optional[str] = None
@@ -80,6 +82,18 @@ class AppWindow(ctk.CTk):
 
     def _get_data(self) -> Tuple[Optional[ExcelData], Optional[str]]:
         return self._data, self._excel_path
+
+    def _apply_icon(self):
+        path = icon_path()
+        if not path:
+            return
+        try:
+            self.iconbitmap(path)
+            # O CustomTkinter aplica o ícone padrão dele com atraso (~200ms)
+            # e sobrescreveria o nosso; reaplica depois
+            self.after(400, lambda: self.iconbitmap(path))
+        except Exception:
+            pass  # ícone é cosmético: nunca impede o app de abrir
 
     # ------------------------------------------------------------------
     # Atualização automática

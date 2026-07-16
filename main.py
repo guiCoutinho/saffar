@@ -80,6 +80,15 @@ def ensure_chromium():
     root.resizable(False, False)
     ctk.set_appearance_mode("dark")
 
+    from app.core.resources import icon_path
+    _icon = icon_path()
+    if _icon:
+        try:
+            root.iconbitmap(_icon)
+            root.after(400, lambda: root.iconbitmap(_icon))
+        except Exception:
+            pass
+
     ctk.CTkLabel(root, text="Configurando Saffar...", font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(24, 8))
     lbl = ctk.CTkLabel(
         root,
