@@ -61,6 +61,18 @@ Ao fim de cada sessão de envios, um arquivo `*_log.csv` é salvo na mesma pasta
 
 ---
 
+## Publicando atualizações
+
+O `.exe` verifica ao iniciar se há versão nova nos releases do GitHub e oferece a atualização com um clique (rodando via `python main.py` a verificação é ignorada). Para publicar uma nova versão:
+
+1. Aumente a versão em `app/version.py` (ex.: `1.1.1`)
+2. Rode `python build.py`
+3. Crie um release no GitHub com a tag correspondente (ex.: `v1.1.1`) e anexe o `dist/Saffar.exe` como asset
+
+Na próxima abertura, os usuários com versões antigas serão avisados; ao aceitar, o app baixa o novo executável, substitui o atual e reabre sozinho.
+
+---
+
 ## Observações
 
 - A sessão do WhatsApp é salva localmente após o primeiro login (não é necessário escanear o QR Code novamente)

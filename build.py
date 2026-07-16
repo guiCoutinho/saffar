@@ -34,9 +34,12 @@ def main():
 
     exe_path = os.path.join(root, "dist", "Saffar.exe")
     if os.path.exists(exe_path):
+        from app.version import __version__
         size_mb = os.path.getsize(exe_path) / (1024 * 1024)
-        print(f"\nBuild concluido: dist/Saffar.exe ({size_mb:.1f} MB)")
+        print(f"\nBuild concluido: dist/Saffar.exe v{__version__} ({size_mb:.1f} MB)")
         print("  O Chromium será baixado automaticamente na primeira execução pelo usuário.")
+        print(f"  Para distribuir como atualização automática: crie um release no GitHub")
+        print(f"  com a tag v{__version__} e anexe o dist/Saffar.exe como asset.")
     else:
         print("\nERRO: Saffar.exe não encontrado após o build.")
         sys.exit(1)
