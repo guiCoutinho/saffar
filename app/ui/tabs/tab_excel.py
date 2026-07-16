@@ -13,6 +13,7 @@ from app.core.phone_utils import (
     normalize_phone as _normalize_phone,
     split_phones as _split_phones,
 )
+from app.ui import theme
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
@@ -409,89 +410,94 @@ class TabExcel(ctk.CTkFrame):
 
     def _build(self):
         top = ctk.CTkFrame(self, fg_color="transparent")
-        top.pack(fill="x", padx=20, pady=(12, 4))
-
-        ctk.CTkLabel(
-            top,
-            text="1. Carregar Planilha Excel",
-            font=ctk.CTkFont(size=16, weight="bold"),
-        ).pack(side="left")
+        top.pack(fill="x", padx=20, pady=(14, 4))
 
         self._btn_open = ctk.CTkButton(
-            top, text="Selecionar arquivo", width=160, command=self._open_file
+            top, text="Selecionar planilha", width=160, command=self._open_file
         )
-        self._btn_open.pack(side="right")
+        self._btn_open.pack(side="left")
 
-        self._lbl_file = ctk.CTkLabel(self, text="Nenhum arquivo selecionado", text_color="gray")
-        self._lbl_file.pack()
+        self._lbl_file = ctk.CTkLabel(
+            top, text="Nenhum arquivo selecionado (Ctrl+O)", text_color="gray", anchor="w"
+        )
+        self._lbl_file.pack(side="left", padx=12)
 
         self._cols_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._cols_frame.pack(fill="x", padx=20, pady=(8, 0))
+        self._cols_frame.pack(fill="x", padx=20)
 
-        # Action buttons row
+        # Ações — secundárias em cinza; destrutivas com hover vermelho
         self._btn_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._btn_frame.pack(fill="x", padx=20, pady=(8, 4))
+        self._btn_frame.pack(fill="x", padx=20, pady=(10, 2))
 
         self._btn_select_all = ctk.CTkButton(
-            self._btn_frame,
-            text="Selecionar todos",
-            width=160,
-            command=self._select_all,
+            self._btn_frame, text="Selecionar todos", width=130, height=30,
+            command=self._select_all, **theme.secondary(),
         )
-        self._btn_select_all.pack(side="left", padx=(0, 8))
+        self._btn_select_all.pack(side="left", padx=(0, 6))
 
         self._btn_deselect_all = ctk.CTkButton(
-            self._btn_frame,
-            text="Desmarcar todos",
-            width=160,
-            command=self._deselect_all,
+            self._btn_frame, text="Desmarcar todos", width=130, height=30,
+            command=self._deselect_all, **theme.secondary(),
         )
-        self._btn_deselect_all.pack(side="left")
+        self._btn_deselect_all.pack(side="left", padx=(0, 14))
 
         self._btn_inadimplentes = ctk.CTkButton(
-            self._btn_frame,
-            text="Filtrar Inadimplentes",
-            width=180,
-            fg_color=("#B5451B", "#8B3214"),
-            hover_color=("#9A3A16", "#6E2710"),
-            command=self._import_inadimplentes,
-            state="disabled",
+            self._btn_frame, text="Filtrar inadimplentes", width=150, height=30,
+            command=self._import_inadimplentes, state="disabled", **theme.secondary(),
         )
-        self._btn_inadimplentes.pack(side="left", padx=(16, 0))
+        self._btn_inadimplentes.pack(side="left", padx=(0, 6))
 
         self._btn_add_contact = ctk.CTkButton(
-            self._btn_frame,
-            text="+ Adicionar contato",
-            width=160,
-            fg_color=("#1A6B35", "#14532A"),
-            hover_color=("#155829", "#0F3D1E"),
-            command=self._add_contact_manually,
+            self._btn_frame, text="+ Adicionar contato", width=150, height=30,
+            command=self._add_contact_manually, **theme.secondary(),
         )
-        self._btn_add_contact.pack(side="left", padx=(16, 0))
+        self._btn_add_contact.pack(side="left")
+
+        # Busca à esquerda; destrutivas isoladas à direita
+        tools_row = ctk.CTkFrame(self, fg_color="transparent")
+        tools_row.pack(fill="x", padx=20, pady=(4, 4))
+
+        # Sem textvariable: o CTkEntry só exibe o placeholder sem variável atrelada
+        self._search_job: Optional[str] = None
+        self._search_entry = ctk.CTkEntry(
+            tools_row, width=280, height=30,
+            placeholder_text="Buscar por nome ou telefone...",
+        )
+        self._search_entry.pack(side="left")
+        self._search_entry.bind("<KeyRelease>", self._on_search)
 
         self._btn_clear = ctk.CTkButton(
-            self._btn_frame,
-            text="Limpar lista",
-            width=130,
-            fg_color=("#8B1A1A", "#6B1212"),
-            hover_color=("#6B1212", "#500E0E"),
-            command=self._clear_contacts,
+            tools_row, text="Limpar lista", width=110, height=30,
+            command=self._clear_contacts, **theme.danger(),
         )
         self._btn_clear.pack(side="right")
 
         self._btn_remove = ctk.CTkButton(
-            self._btn_frame,
-            text="Remover selecionados",
-            width=180,
-            fg_color=("#7A4A0A", "#5C3608"),
-            hover_color=("#5C3608", "#402605"),
-            command=self._remove_selected,
+            tools_row, text="Remover selecionados", width=160, height=30,
+            command=self._remove_selected, **theme.danger(),
         )
-        self._btn_remove.pack(side="right", padx=(0, 8))
+        self._btn_remove.pack(side="right", padx=(0, 6))
 
         # Contacts scrollable list
         self._contacts_frame = ctk.CTkScrollableFrame(self, label_text="Contatos")
-        self._contacts_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self._contacts_frame.pack(fill="both", expand=True, padx=20, pady=(0, 16))
+
+    # ------------------------------------------------------------------
+    # Busca
+    # ------------------------------------------------------------------
+
+    def _on_search(self, *_):
+        if self._search_job is not None:
+            self.after_cancel(self._search_job)
+        self._search_job = self.after(250, self._apply_search)
+
+    def _search_term(self) -> str:
+        return self._search_entry.get().strip().lower()
+
+    def _apply_search(self):
+        self._search_job = None
+        if self._excel_data is not None:
+            self._load_contacts(self._excel_data)
 
     # ------------------------------------------------------------------
     # File handling
@@ -509,18 +515,23 @@ class TabExcel(ctk.CTkFrame):
             return  # user cancelled
 
         header_row, phone_col, display_cols = dialog.result
+        # Planilhas grandes travam a UI por alguns segundos; sinaliza espera
+        self.configure(cursor="watch")
+        self.update_idletasks()
         try:
             data = load_excel(path, header_row=header_row, phone_column=phone_col)
             self._file_path = path
             self._display_cols = display_cols
             self._excel_data = data
-            self._lbl_file.configure(text=path, text_color="white")
+            self._lbl_file.configure(text=path, text_color=("gray10", "gray90"))
             self._show_columns(data)
             self._load_contacts(data)
             self._on_loaded(data, path)
             self._btn_inadimplentes.configure(state="normal")
         except Exception as e:
             messagebox.showerror("Erro ao abrir arquivo", str(e))
+        finally:
+            self.configure(cursor="")
 
     def _import_inadimplentes(self):
         if self._excel_data is None:
@@ -663,8 +674,9 @@ class TabExcel(ctk.CTkFrame):
             w.destroy()
         for w in self._cols_frame.winfo_children():
             w.destroy()
-        self._lbl_file.configure(text="Nenhum arquivo selecionado", text_color="gray")
+        self._lbl_file.configure(text="Nenhum arquivo selecionado (Ctrl+O)", text_color="gray")
         self._btn_inadimplentes.configure(state="disabled")
+        self._search_entry.delete(0, "end")
 
     def _show_columns(self, data: ExcelData):
         for w in self._cols_frame.winfo_children():
@@ -689,11 +701,17 @@ class TabExcel(ctk.CTkFrame):
     # ------------------------------------------------------------------
 
     def _load_contacts(self, data: ExcelData):
+        # Preserva o estado de seleção entre recargas (busca, edição, remoção)
+        prev_state = {p: v.get() for p, v in self.contact_vars.items()}
+
         for w in self._contacts_frame.winfo_children():
             w.destroy()
         self.contact_vars.clear()
         self._contact_info.clear()
         self._all_vars.clear()
+
+        term = self._search_term()
+        term_digits = "".join(filter(str.isdigit, term))
 
         phone_col = data.phone_column
         display_cols = self._display_cols or ([phone_col] if phone_col else data.columns[:1])
@@ -721,7 +739,8 @@ class TabExcel(ctk.CTkFrame):
             font=ctk.CTkFont(weight="bold"), fg_color=hdr_color,
         ).grid(row=0, column=last_col, sticky="ew", padx=0, pady=(0, 2))
 
-        # Batch DB: collect valid contacts, upsert all and fetch last_sent in 2 queries
+        # Passo 1 — registra TODOS os contatos válidos (independente da busca):
+        # a seleção e o envio consideram a lista completa, não só o filtro visível
         name_col = _detect_name_column(data.columns)
         contact_batch: list[tuple[str, str]] = []
         for row in data.rows:
@@ -731,13 +750,36 @@ class TabExcel(ctk.CTkFrame):
                 norm = _normalize_phone(raw_phone)
                 if norm and _is_valid_phone(norm):
                     contact_batch.append((norm, name))
+                    if norm not in self.contact_vars:
+                        # Telefone repetido reusa o mesmo var: marcar/desmarcar
+                        # qualquer linha do número reflete em todas
+                        self.contact_vars[norm] = tk.BooleanVar(value=prev_state.get(norm, True))
+                    self._contact_info[norm] = (name, raw_phone)
         last_sent_map = profile_store.upsert_contacts_batch(contact_batch)
 
+        def _row_matches(name: str, raw_parts: list) -> bool:
+            if not term:
+                return True
+            if term in name.lower():
+                return True
+            for part in raw_parts:
+                if term in str(part).lower():
+                    return True
+            if term_digits:
+                for part in raw_parts:
+                    if term_digits in _normalize_phone(str(part)):
+                        return True
+            return False
+
+        # Passo 2 — renderiza apenas as linhas que casam com a busca
         grid_row = 1
         for row in data.rows:
             raw_phone_cell = str(row.get(phone_col, "")).strip() if phone_col else ""
             name = str(row.get(name_col or "", "")).strip()
             row_bg = ("gray88", "gray17") if grid_row % 2 == 0 else ("gray82", "gray20")
+
+            if not _row_matches(name, _split_phones(raw_phone_cell) if raw_phone_cell else []):
+                continue
 
             if not raw_phone_cell:
                 self._add_invalid_row(table, grid_row, name, "", row, display_cols, phone_col)
@@ -754,15 +796,8 @@ class TabExcel(ctk.CTkFrame):
 
                 last_sent_str = _format_last_sent(last_sent_map.get(norm_phone))
 
-                # Telefone repetido reusa o mesmo var: marcar/desmarcar qualquer
-                # linha do número reflete em todas e no envio (que é único por número)
-                if norm_phone in self.contact_vars:
-                    var = self.contact_vars[norm_phone]
-                else:
-                    var = tk.BooleanVar(value=True)
-                    self.contact_vars[norm_phone] = var
+                var = self.contact_vars[norm_phone]
                 self._all_vars.append(var)
-                self._contact_info[norm_phone] = (name, raw_phone)
 
                 cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, bg_color=row_bg)
                 cb.grid(row=grid_row, column=0, sticky="nsew", padx=(4, 0), pady=1)

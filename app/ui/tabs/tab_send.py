@@ -10,6 +10,7 @@ from app.core.excel_reader import ExcelData, render_message, _detect_name_column
 from app.core.phone_utils import normalize_phone as _normalize_phone, split_phones
 from app.core.whatsapp import WhatsAppBot
 from app.core import logger
+from app.ui import theme
 
 if TYPE_CHECKING:
     from app.ui.app_window import AppWindow
@@ -24,48 +25,59 @@ class TabSend(ctk.CTkFrame):
         self._app = app
         self._log_path: Optional[str] = None
         self._failures: List[Dict] = []
+        self._sent_ok = 0
+        self._cycle_est = 0.0
         self._sending = False
         self._paused = False
         self._pause_event = threading.Event()
         self._pause_event.set()
+        self._cancel_event = threading.Event()
         self._build()
 
     def _build(self):
-        ctk.CTkLabel(self, text="4. Enviar Mensagens", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 8))
-
         interval_frame = ctk.CTkFrame(self, fg_color="transparent")
-        interval_frame.pack(pady=8)
+        interval_frame.pack(pady=(20, 4))
 
-        ctk.CTkLabel(interval_frame, text="Intervalo entre envios:").grid(row=0, column=0, columnspan=4, pady=(0, 6))
-        ctk.CTkLabel(interval_frame, text="Mínimo (s):").grid(row=1, column=0, padx=8)
-        self._entry_min = ctk.CTkEntry(interval_frame, width=70)
+        ctk.CTkLabel(interval_frame, text="Intervalo entre envios —").grid(row=0, column=0, padx=(0, 10))
+        ctk.CTkLabel(interval_frame, text="mínimo (s):", text_color="gray").grid(row=0, column=1, padx=4)
+        self._entry_min = ctk.CTkEntry(interval_frame, width=64)
         self._entry_min.insert(0, "10")
-        self._entry_min.grid(row=1, column=1, padx=4)
+        self._entry_min.grid(row=0, column=2, padx=4)
 
-        ctk.CTkLabel(interval_frame, text="Máximo (s):").grid(row=1, column=2, padx=8)
-        self._entry_max = ctk.CTkEntry(interval_frame, width=70)
+        ctk.CTkLabel(interval_frame, text="máximo (s):", text_color="gray").grid(row=0, column=3, padx=(12, 4))
+        self._entry_max = ctk.CTkEntry(interval_frame, width=64)
         self._entry_max.insert(0, "30")
-        self._entry_max.grid(row=1, column=3, padx=4)
+        self._entry_max.grid(row=0, column=4, padx=4)
 
         btn_row = ctk.CTkFrame(self, fg_color="transparent")
-        btn_row.pack(pady=16)
+        btn_row.pack(pady=14)
 
-        self._btn_start = ctk.CTkButton(btn_row, text="Iniciar Envios", width=180, height=44, command=self._start)
-        self._btn_start.pack(side="left", padx=8)
+        self._btn_start = ctk.CTkButton(btn_row, text="Iniciar envios", width=180, height=42, command=self._start)
+        self._btn_start.pack(side="left", padx=6)
 
-        self._btn_pause = ctk.CTkButton(btn_row, text="Pausar", width=120, height=44, command=self._toggle_pause, state="disabled", fg_color="gray40", hover_color="gray30")
-        self._btn_pause.pack(side="left", padx=8)
+        self._btn_pause = ctk.CTkButton(
+            btn_row, text="Pausar", width=110, height=42, command=self._toggle_pause,
+            state="disabled", **theme.secondary(),
+        )
+        self._btn_pause.pack(side="left", padx=6)
 
-        self._progress = ctk.CTkProgressBar(self, width=400)
+        self._btn_cancel = ctk.CTkButton(
+            btn_row, text="Cancelar", width=110, height=42, command=self._cancel,
+            state="disabled", **theme.danger(),
+        )
+        self._btn_cancel.pack(side="left", padx=6)
+
+        self._progress = ctk.CTkProgressBar(self, width=440)
         self._progress.set(0)
-        self._progress.pack(pady=4)
+        self._progress.pack(pady=(6, 2))
 
-        self._lbl_progress = ctk.CTkLabel(self, text="0 / 0 enviados")
+        self._lbl_progress = ctk.CTkLabel(self, text="0 / 0", text_color="gray")
         self._lbl_progress.pack()
 
-        ctk.CTkLabel(self, text="Log em tempo real:", font=ctk.CTkFont(weight="bold")).pack(pady=(16, 4))
         self._log_box = ctk.CTkTextbox(self, height=160, state="disabled")
-        self._log_box.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+        self._log_box.pack(fill="both", expand=True, padx=20, pady=(12, 16))
+        self._log_box.tag_config("ok", foreground="#3DBE7B")
+        self._log_box.tag_config("err", foreground="#E5605C")
 
     def _start(self):
         data, excel_path = self._get_data()
@@ -123,11 +135,16 @@ class TabSend(ctk.CTkFrame):
         self._log_path = logger.get_log_path(excel_path or "")
         logger.init_log(self._log_path)
         self._failures = []
+        self._sent_ok = 0
         self._sending = True
         self._paused = False
         self._pause_event.set()
+        self._cancel_event.clear()
+        # Estimativa por contato: intervalo médio + ~10s de navegação/digitação
+        self._cycle_est = (min_s + max_s) / 2 + 10
         self._btn_start.configure(state="disabled", text="Enviando...")
         self._btn_pause.configure(state="normal", text="Pausar", fg_color="#D97706", hover_color="#B45309")
+        self._btn_cancel.configure(state="normal")
         threading.Thread(target=self._run_sending, args=(data, message_template, min_s, max_s, selected_phones), daemon=True).start()
 
     def _run_sending(self, data: ExcelData, template: str, min_s: float, max_s: float, selected_phones: set):
@@ -146,8 +163,11 @@ class TabSend(ctk.CTkFrame):
         total = len(targets)
 
         for i, (row, norm_phone) in enumerate(targets):
-            # Aguarda se estiver pausado (bloqueia até retomar)
-            self._pause_event.wait()
+            # Aguarda se estiver pausado; sai imediatamente se cancelado
+            while not self._pause_event.is_set() and not self._cancel_event.is_set():
+                time.sleep(0.2)
+            if self._cancel_event.is_set():
+                break
 
             phone = norm_phone
             nome = str(row.get(name_col or "", "")).strip() or norm_phone
@@ -174,7 +194,8 @@ class TabSend(ctk.CTkFrame):
             done_event.wait(timeout=send_timeout)
 
             if result["success"]:
-                self._log(f"  ✓ Enviado com sucesso.")
+                self._sent_ok += 1
+                self._log("  ✓ Enviado com sucesso.", "ok")
                 logger.log_result(self._log_path, nome, phone, True)
                 if self._app is not None:
                     self.after(0, lambda p=norm_phone: self._app.tab_excel.uncheck_contact(p))
@@ -184,7 +205,7 @@ class TabSend(ctk.CTkFrame):
                     error_msg = f"Timeout: sem resposta em {send_timeout:.0f}s (WhatsApp Web pode estar travado)"
                 else:
                     error_msg = result["error"] or "Erro desconhecido"
-                self._log(f"  ✗ Falha: {error_msg}")
+                self._log(f"  ✗ Falha: {error_msg}", "err")
                 logger.log_result(self._log_path, nome, phone, False, error_msg)
                 self._failures.append({"nome": nome, "telefone": phone, "motivo": error_msg})
                 if self._app is not None:
@@ -195,20 +216,43 @@ class TabSend(ctk.CTkFrame):
             if i < total - 1:
                 wait = random.uniform(min_s, max_s)
                 self._log(f"  ⏳ Aguardando {wait:.1f}s...")
-                time.sleep(wait)
+                # wait() retorna True se o usuário cancelou durante a espera
+                if self._cancel_event.wait(timeout=wait):
+                    break
+
+        if self._cancel_event.is_set():
+            self._log("⛔ Envios cancelados pelo usuário.", "err")
 
         self.after(0, self._on_done)
 
     def is_sending(self) -> bool:
         return self._sending
 
+    def _cancel(self):
+        if not messagebox.askyesno("Cancelar envios", "Interromper os envios restantes?\nO envio em andamento será concluído."):
+            return
+        self._cancel_event.set()
+        self._pause_event.set()  # se estiver pausado, libera a thread para encerrar
+        self._btn_cancel.configure(state="disabled", text="Cancelando...")
+
     def _on_done(self):
         self._sending = False
-        self._btn_start.configure(state="normal", text="Iniciar Envios")
-        self._btn_pause.configure(state="disabled", text="Pausar", fg_color="gray40", hover_color="gray30")
+        self._btn_start.configure(state="normal", text="Iniciar envios")
+        self._btn_pause.configure(state="disabled", text="Pausar", **theme.secondary())
+        self._btn_cancel.configure(state="disabled", text="Cancelar")
         self._paused = False
         self._pause_event.set()
-        if self._failures:
+
+        fails = len(self._failures)
+        if self._sent_ok or fails:
+            self._lbl_progress.configure(text=f"✓ {self._sent_ok} enviados   ·   ✗ {fails} falhas")
+
+        if self._cancel_event.is_set():
+            messagebox.showinfo(
+                "Cancelado",
+                f"Envios interrompidos.\n{self._sent_ok} mensagens foram enviadas antes do cancelamento.",
+            )
+        elif self._failures:
             self._show_failures()
         else:
             messagebox.showinfo("Concluído", f"Todos os envios foram realizados com sucesso!\nLog salvo em: {self._log_path}")
@@ -238,15 +282,24 @@ class TabSend(ctk.CTkFrame):
         ctk.CTkLabel(win, text=f"Log completo: {self._log_path}", text_color="gray", wraplength=480).pack(pady=4)
         ctk.CTkButton(win, text="Fechar", command=win.destroy).pack(pady=8)
 
-    def _log(self, text: str):
-        self.after(0, lambda t=text: self._append_log(t))
+    def _log(self, text: str, tag: Optional[str] = None):
+        self.after(0, lambda t=text, g=tag: self._append_log(t, g))
 
-    def _append_log(self, text: str):
+    def _append_log(self, text: str, tag: Optional[str] = None):
         self._log_box.configure(state="normal")
-        self._log_box.insert("end", text + "\n")
+        self._log_box.insert("end", text + "\n", tag)
         self._log_box.see("end")
         self._log_box.configure(state="disabled")
 
+    @staticmethod
+    def _fmt_eta(seconds: float) -> str:
+        minutes = int(seconds // 60)
+        return f"{minutes} min" if minutes >= 1 else f"{int(seconds)}s"
+
     def _update_progress(self, current: int, total: int):
+        text = f"{current} / {total}"
+        if 0 < current < total and self._cycle_est:
+            remaining = (total - current) * self._cycle_est
+            text += f"   ·   ~{self._fmt_eta(remaining)} restantes"
         self.after(0, lambda: self._progress.set(current / total))
-        self.after(0, lambda: self._lbl_progress.configure(text=f"{current} / {total} enviados"))
+        self.after(0, lambda t=text: self._lbl_progress.configure(text=t))

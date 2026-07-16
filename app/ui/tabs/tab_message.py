@@ -1,8 +1,10 @@
 import tkinter as tk
 from tkinter import simpledialog, messagebox
-from typing import Callable, List, Optional, TYPE_CHECKING
+from typing import Callable, List, TYPE_CHECKING
 
 import customtkinter as ctk
+
+from app.ui import theme
 
 if TYPE_CHECKING:
     from app.core.profile_store import ProfileStore
@@ -20,26 +22,26 @@ class TabMessage(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self._on_message_change = on_message_change
         self._store = profile_store
-        self._first_row: dict = {}
+        self._rows: List[dict] = []
+        self._preview_index = 0
         self._build()
         self._refresh_template_list()
 
     def _build(self):
-        ctk.CTkLabel(self, text="2. Compor Mensagem", font=ctk.CTkFont(size=16, weight="bold")).pack(pady=(20, 4))
+        pad = 20
+
         ctk.CTkLabel(
             self,
-            text="Use os botões abaixo para inserir campos da planilha na mensagem.",
+            text="Campos da planilha (clique para inserir na mensagem):",
             text_color="gray",
-        ).pack()
+        ).pack(anchor="w", padx=pad, pady=(14, 2))
 
-        ctk.CTkLabel(self, text="Campos disponíveis:", font=ctk.CTkFont(weight="bold")).pack(pady=(16, 4))
+        self._placeholders_frame = ctk.CTkScrollableFrame(self, height=44, orientation="horizontal", fg_color="transparent")
+        self._placeholders_frame.pack(fill="x", padx=pad)
 
-        self._placeholders_frame = ctk.CTkScrollableFrame(self, height=60, orientation="horizontal")
-        self._placeholders_frame.pack(fill="x", padx=20)
-
-        # Template controls
+        # Templates
         tpl_frame = ctk.CTkFrame(self, fg_color="transparent")
-        tpl_frame.pack(fill="x", padx=20, pady=(12, 0))
+        tpl_frame.pack(fill="x", padx=pad, pady=(10, 0))
 
         ctk.CTkLabel(tpl_frame, text="Templates:", font=ctk.CTkFont(weight="bold")).pack(side="left", padx=(0, 8))
 
@@ -48,29 +50,51 @@ class TabMessage(ctk.CTkFrame):
             tpl_frame,
             variable=self._tpl_var,
             values=[_PLACEHOLDER_TEMPLATE],
-            width=220,
+            width=230,
             command=self._on_template_select,
         )
         self._tpl_menu.pack(side="left", padx=(0, 8))
 
-        ctk.CTkButton(tpl_frame, text="Salvar", width=80, command=self._save_template).pack(side="left", padx=(0, 4))
-        ctk.CTkButton(
-            tpl_frame, text="Excluir", width=80,
-            fg_color=("gray50", "gray30"), hover_color=("gray40", "gray20"),
-            command=self._delete_template,
-        ).pack(side="left")
+        ctk.CTkButton(tpl_frame, text="Salvar", width=80, command=self._save_template, **theme.secondary()).pack(side="left", padx=(0, 4))
+        ctk.CTkButton(tpl_frame, text="Excluir", width=80, command=self._delete_template, **theme.danger()).pack(side="left")
 
-        ctk.CTkLabel(self, text="Mensagem:", font=ctk.CTkFont(weight="bold")).pack(pady=(12, 4), anchor="w", padx=20)
+        # Mensagem + contador de caracteres
+        msg_header = ctk.CTkFrame(self, fg_color="transparent")
+        msg_header.pack(fill="x", padx=pad, pady=(12, 4))
+        ctk.CTkLabel(msg_header, text="Mensagem:", font=ctk.CTkFont(weight="bold")).pack(side="left")
+        self._lbl_count = ctk.CTkLabel(msg_header, text="0 caracteres", text_color="gray", font=ctk.CTkFont(size=12))
+        self._lbl_count.pack(side="right")
 
-        self._textbox = ctk.CTkTextbox(self, height=200)
-        self._textbox.pack(fill="both", expand=True, padx=20)
+        self._textbox = ctk.CTkTextbox(self, height=120)
+        self._textbox.pack(fill="both", expand=True, padx=pad)
         self._textbox.bind("<KeyRelease>", self._on_key)
 
-        self._lbl_preview_title = ctk.CTkLabel(self, text="Preview (primeira linha):", font=ctk.CTkFont(weight="bold"))
-        self._lbl_preview_title.pack(pady=(12, 4), anchor="w", padx=20)
+        # Painel de preview com navegação entre contatos
+        preview = ctk.CTkFrame(self, fg_color=("gray88", "gray16"), corner_radius=8)
+        preview.pack(fill="x", padx=pad, pady=(10, 16))
 
-        self._lbl_preview = ctk.CTkLabel(self, text="—", wraplength=500, justify="left", text_color="gray")
-        self._lbl_preview.pack(anchor="w", padx=20, pady=(0, 20))
+        prev_header = ctk.CTkFrame(preview, fg_color="transparent")
+        prev_header.pack(fill="x", padx=12, pady=(8, 0))
+        ctk.CTkLabel(prev_header, text="Preview", font=ctk.CTkFont(size=12, weight="bold"), text_color="gray").pack(side="left")
+
+        self._btn_next = ctk.CTkButton(
+            prev_header, text="›", width=26, height=22, command=lambda: self._nav_preview(1),
+            **theme.secondary(),
+        )
+        self._btn_next.pack(side="right")
+        self._lbl_prev_pos = ctk.CTkLabel(prev_header, text="—", text_color="gray", font=ctk.CTkFont(size=12))
+        self._lbl_prev_pos.pack(side="right", padx=8)
+        self._btn_prev = ctk.CTkButton(
+            prev_header, text="‹", width=26, height=22, command=lambda: self._nav_preview(-1),
+            **theme.secondary(),
+        )
+        self._btn_prev.pack(side="right")
+
+        self._lbl_preview = ctk.CTkLabel(
+            preview, text="Carregue uma planilha para ver o preview.",
+            wraplength=640, justify="left", anchor="w", text_color=("gray25", "gray75"),
+        )
+        self._lbl_preview.pack(fill="x", padx=12, pady=(4, 10))
 
     # ------------------------------------------------------------------
     # Template management
@@ -127,18 +151,22 @@ class TabMessage(ctk.CTkFrame):
     # Placeholders & message
     # ------------------------------------------------------------------
 
-    def set_columns(self, columns: List[str], first_row: dict):
+    def set_columns(self, columns: List[str], rows: List[dict]):
         for w in self._placeholders_frame.winfo_children():
             w.destroy()
-        self._first_row = first_row
+        self._rows = rows or []
+        self._preview_index = 0
         for col in columns:
             btn = ctk.CTkButton(
                 self._placeholders_frame,
                 text=col,
                 width=80,
+                height=26,
                 command=lambda c=col: self._insert_placeholder(c),
+                **theme.secondary(),
             )
-            btn.pack(side="left", padx=4, pady=4)
+            btn.pack(side="left", padx=4, pady=2)
+        self._notify()
 
     def _insert_placeholder(self, col: str):
         self._textbox.insert("insert", f"{{{{{col}}}}}")
@@ -151,14 +179,25 @@ class TabMessage(ctk.CTkFrame):
     def _notify(self):
         msg = self.get_message()
         self._on_message_change(msg)
+        self._lbl_count.configure(text=f"{len(msg)} caracteres")
         self._update_preview(msg)
 
-    def _update_preview(self, template: str):
-        if not self._first_row:
+    def _nav_preview(self, delta: int):
+        if not self._rows:
             return
+        self._preview_index = (self._preview_index + delta) % len(self._rows)
+        self._update_preview(self.get_message())
+
+    def _update_preview(self, template: str):
+        if not self._rows:
+            self._lbl_prev_pos.configure(text="—")
+            self._lbl_preview.configure(text="Carregue uma planilha para ver o preview.")
+            return
+        row = self._rows[self._preview_index]
         preview = template
-        for key, value in self._first_row.items():
+        for key, value in row.items():
             preview = preview.replace(f"{{{{{key}}}}}", str(value))
+        self._lbl_prev_pos.configure(text=f"{self._preview_index + 1} / {len(self._rows)}")
         self._lbl_preview.configure(text=preview or "—")
 
     def get_message(self) -> str:

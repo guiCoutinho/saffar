@@ -74,11 +74,12 @@ def ensure_chromium():
     if os.path.exists(FIRST_RUN_FLAG):
         os.remove(FIRST_RUN_FLAG)
 
+    ctk.set_appearance_mode("dark")
+    ctk.set_default_color_theme("green")
     root = ctk.CTk()
     root.title("Saffar — Configuração Inicial")
     root.geometry("400x160")
     root.resizable(False, False)
-    ctk.set_appearance_mode("dark")
 
     from app.core.resources import icon_path
     _icon = icon_path()

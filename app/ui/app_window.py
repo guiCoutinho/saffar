@@ -1,4 +1,6 @@
+import json
 import os
+import re
 import threading
 import customtkinter as ctk
 from tkinter import messagebox
@@ -9,20 +11,25 @@ from app.core.excel_reader import ExcelData
 from app.core.whatsapp import WhatsAppBot
 from app.core.profile_store import ProfileStore
 from app.version import __version__
+from app.ui import theme
 from app.ui.tabs.tab_excel import TabExcel
 from app.ui.tabs.tab_message import TabMessage
 from app.ui.tabs.tab_connect import TabConnect
 from app.ui.tabs.tab_send import TabSend
 
+_UI_STATE_PATH = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "ui_state.json")
+
 
 class AppWindow(ctk.CTk):
     def __init__(self):
-        super().__init__()
         ctk.set_appearance_mode("dark")
-        ctk.set_default_color_theme("blue")
+        ctk.set_default_color_theme("green")
+        super().__init__()
 
         self.title(f"Saffar — Automação WhatsApp  v{__version__}")
-        self.geometry("700x600")
+        # 660 de altura cabe (com barra de título e taskbar) em telas de 768px
+        self.geometry(self._restore_geometry() or "900x660")
+        self.minsize(780, 600)
         self.resizable(True, True)
         self._apply_icon()
 
@@ -34,29 +41,48 @@ class AppWindow(ctk.CTk):
 
         self._build()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Control-o>", lambda _e: self._tab_excel._open_file())
         # Espera a janela abrir antes de checar atualização (não bloqueia o uso)
         self.after(1500, self._check_updates_async)
+        self.after(1000, self._poll_status)
 
     def _build(self):
-        self._tabs = ctk.CTkTabview(self)
-        self._tabs.pack(fill="both", expand=True, padx=16, pady=16)
+        # Rodapé com status global (visível em qualquer aba)
+        footer = ctk.CTkFrame(self, height=30, corner_radius=0, fg_color=("gray86", "gray14"))
+        footer.pack(side="bottom", fill="x")
+        footer.pack_propagate(False)
 
-        for name in ["📂 Excel", "✏️ Mensagem", "📱 WhatsApp", "🚀 Enviar"]:
+        self._lbl_conn = ctk.CTkLabel(
+            footer, text="● Desconectado", text_color=theme.RED_ERR, font=ctk.CTkFont(size=12)
+        )
+        self._lbl_conn.pack(side="left", padx=(16, 14))
+        self._lbl_sel = ctk.CTkLabel(
+            footer, text="Nenhum contato carregado", text_color="gray", font=ctk.CTkFont(size=12)
+        )
+        self._lbl_sel.pack(side="left")
+        ctk.CTkLabel(
+            footer, text=f"v{__version__}", text_color="gray", font=ctk.CTkFont(size=12)
+        ).pack(side="right", padx=16)
+
+        self._tabs = ctk.CTkTabview(self)
+        self._tabs.pack(fill="both", expand=True, padx=16, pady=(10, 8))
+
+        for name in ["Contatos", "Mensagem", "WhatsApp", "Envio"]:
             self._tabs.add(name)
 
-        self._tab_excel = TabExcel(self._tabs.tab("📂 Excel"), app=self, on_loaded=self._on_excel_loaded)
+        self._tab_excel = TabExcel(self._tabs.tab("Contatos"), app=self, on_loaded=self._on_excel_loaded)
         self.tab_excel = self._tab_excel
         self._tab_excel.pack(fill="both", expand=True)
 
         self._tab_message = TabMessage(
-            self._tabs.tab("✏️ Mensagem"),
+            self._tabs.tab("Mensagem"),
             on_message_change=self._on_message_change,
             profile_store=self.profile_store,
         )
         self._tab_message.pack(fill="both", expand=True)
 
         self._tab_send = TabSend(
-            self._tabs.tab("🚀 Enviar"),
+            self._tabs.tab("Envio"),
             bot=self._bot,
             get_data=self._get_data,
             get_message=self._tab_message.get_message,
@@ -65,23 +91,60 @@ class AppWindow(ctk.CTk):
         self._tab_send.pack(fill="both", expand=True)
 
         self._tab_connect = TabConnect(
-            self._tabs.tab("📱 WhatsApp"),
+            self._tabs.tab("WhatsApp"),
             bot=self._bot,
             is_sending=self._tab_send.is_sending,
         )
         self._tab_connect.pack(fill="both", expand=True)
 
+    def _poll_status(self):
+        connected = self._bot.is_connected()
+        self._lbl_conn.configure(
+            text="● Conectado" if connected else "● Desconectado",
+            text_color=theme.GREEN_OK if connected else theme.RED_ERR,
+        )
+        total = len(self._tab_excel.contact_vars)
+        if total:
+            n = sum(1 for v in self._tab_excel.contact_vars.values() if v.get())
+            self._lbl_sel.configure(text=f"{n} de {total} contatos selecionados")
+        else:
+            self._lbl_sel.configure(text="Nenhum contato carregado")
+        self.after(1000, self._poll_status)
+
     def _on_excel_loaded(self, data: ExcelData, path: str):
         self._data = data
         self._excel_path = path
-        first_row = data.rows[0] if data.rows else {}
-        self._tab_message.set_columns(data.columns, first_row)
+        self._tab_message.set_columns(data.columns, data.rows)
 
     def _on_message_change(self, message: str):
         self._message = message
 
     def _get_data(self) -> Tuple[Optional[ExcelData], Optional[str]]:
         return self._data, self._excel_path
+
+    def _restore_geometry(self) -> Optional[str]:
+        """Recupera tamanho/posição da última sessão, se ainda couber na tela."""
+        try:
+            with open(_UI_STATE_PATH, encoding="utf-8") as f:
+                geo = str(json.load(f).get("geometry", ""))
+            m = re.match(r"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$", geo)
+            if not m:
+                return None
+            w, h, x, y = map(int, m.groups())
+            sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+            if w < 700 or h < 550 or x < -50 or y < -50 or x > sw - 200 or y > sh - 200:
+                return None
+            return geo
+        except Exception:
+            return None
+
+    def _save_geometry(self):
+        try:
+            os.makedirs(os.path.dirname(_UI_STATE_PATH), exist_ok=True)
+            with open(_UI_STATE_PATH, "w", encoding="utf-8") as f:
+                json.dump({"geometry": self.geometry()}, f)
+        except OSError:
+            pass
 
     def _apply_icon(self):
         path = icon_path()
@@ -179,6 +242,7 @@ class AppWindow(ctk.CTk):
             "Há envios em andamento. Sair agora interrompe a campanha.\nDeseja realmente sair?",
         ):
             return
+        self._save_geometry()
         # Fecha o navegador e o banco antes de encerrar o processo — sem isso
         # o Chromium fica aberto órfão no Windows
         self._bot.shutdown(timeout=3)
