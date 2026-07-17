@@ -7,7 +7,7 @@ import customtkinter as ctk
 
 from app.core.excel_reader import (
     ExcelData, UnidadeInadimplente, load_excel, preview_excel,
-    parse_inadimplentes, _detect_phone_column, _detect_name_column,
+    parse_inadimplentes, normalize_unidade, _detect_phone_column, _detect_name_column,
 )
 from app.core.phone_utils import (
     normalize_phone as _normalize_phone,
@@ -567,8 +567,8 @@ class TabExcel(ctk.CTkFrame):
         # Build enriched rows: keep only units that appear in inadimplentes
         new_rows = []
         for row in self._excel_data.rows:
-            unit = str(row.get(unidade_col, "")).strip()
-            if unit in inadimplentes:
+            unit = normalize_unidade(row.get(unidade_col, ""))
+            if unit and unit in inadimplentes:
                 info = inadimplentes[unit]
                 enriched = dict(row)
                 enriched["Meses em aberto"] = ", ".join(info.competencias) if info.competencias else "—"

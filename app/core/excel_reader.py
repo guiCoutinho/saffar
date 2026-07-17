@@ -56,6 +56,30 @@ class UnidadeInadimplente:
     total: str = ""
 
 
+# Linha de cabeçalho de unidade no relatório: "302 - Nome", "A-302 - Nome",
+# "302-B - Nome" etc. O separador precisa de espaço em pelo menos um lado
+# para não confundir com o traço interno da unidade (ex.: "A-302").
+_UNIT_HEADER_RE = re.compile(
+    r'^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?)(?:\s+-\s*|\s*-\s+)(.+)'
+)
+# Formato antigo, apenas dígitos, aceito mesmo sem espaços ("302-Nome").
+_UNIT_HEADER_NUM_RE = re.compile(r'^(\d{3,6})\s*-\s*(.+)')
+
+
+def _match_unit_header(text: str) -> Optional[re.Match]:
+    m = _UNIT_HEADER_RE.match(text)
+    if m and any(ch.isdigit() for ch in m.group(1)) and len(m.group(1)) <= 12:
+        return m
+    return _UNIT_HEADER_NUM_RE.match(text)
+
+
+def normalize_unidade(value: str) -> str:
+    """Normaliza a unidade para comparação: maiúsculas, sem espaços ou
+    separadores e sem zeros à esquerda ("a - 0302" -> "A302")."""
+    value = re.sub(r'[\s\-./]', '', str(value)).upper()
+    return re.sub(r'\d+', lambda m: m.group(0).lstrip('0') or '0', value)
+
+
 def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
     """Parse a relatório de inadimplentes Excel and return a dict keyed by unit number."""
     try:
@@ -76,10 +100,10 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
         cells = [str(c).strip() for c in row]
         first = cells[0] if cells else ""
 
-        m = re.match(r'^(\d{3,6})\s*-\s*(.+)', first)
+        m = _match_unit_header(first)
         if m:
             if current:
-                result[current.unidade] = current
+                result[normalize_unidade(current.unidade)] = current
             current = UnidadeInadimplente(unidade=m.group(1).strip())
             compet_idx = None
             total_idx = None
@@ -113,7 +137,7 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
                 current.competencias.append(comp)
 
     if current:
-        result[current.unidade] = current
+        result[normalize_unidade(current.unidade)] = current
 
     return result
 
