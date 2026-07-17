@@ -29,6 +29,7 @@ class TabSend(ctk.CTkFrame):
         self._cycle_est = 0.0
         self._sending = False
         self._paused = False
+        self._aborted_timeout = False
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._cancel_event = threading.Event()
@@ -138,6 +139,7 @@ class TabSend(ctk.CTkFrame):
         self._sent_ok = 0
         self._sending = True
         self._paused = False
+        self._aborted_timeout = False
         self._pause_event.set()
         self._cancel_event.clear()
         # Estimativa por contato: intervalo médio + ~10s de navegação/digitação
@@ -201,7 +203,8 @@ class TabSend(ctk.CTkFrame):
                     self.after(0, lambda p=norm_phone: self._app.tab_excel.uncheck_contact(p))
                     self._app.profile_store.record_send(norm_phone, message, "success")
             else:
-                if not done_event.is_set():
+                timed_out = not done_event.is_set()
+                if timed_out:
                     error_msg = f"Timeout: sem resposta em {send_timeout:.0f}s (WhatsApp Web pode estar travado)"
                 else:
                     error_msg = result["error"] or "Erro desconhecido"
@@ -210,6 +213,15 @@ class TabSend(ctk.CTkFrame):
                 self._failures.append({"nome": nome, "telefone": phone, "motivo": error_msg})
                 if self._app is not None:
                     self._app.profile_store.record_send(norm_phone, message, "failure", error_msg)
+
+                # Um timeout significa que o worker do WhatsApp ainda está preso
+                # naquele envio. Como os envios são enfileirados nesse mesmo
+                # worker, continuar só empilharia tarefas presas e faria a tela
+                # divergir do que foi realmente enviado. Interrompe a campanha.
+                if timed_out:
+                    self._aborted_timeout = True
+                    self._update_progress(i + 1, total)
+                    break
 
             self._update_progress(i + 1, total)
 
@@ -251,6 +263,14 @@ class TabSend(ctk.CTkFrame):
             messagebox.showinfo(
                 "Cancelado",
                 f"Envios interrompidos.\n{self._sent_ok} mensagens foram enviadas antes do cancelamento.",
+            )
+        elif self._aborted_timeout:
+            messagebox.showwarning(
+                "Envio interrompido",
+                "O WhatsApp Web parou de responder e a campanha foi interrompida "
+                f"para evitar erros em cadeia.\n\n{self._sent_ok} mensagem(ns) enviada(s) até aqui.\n\n"
+                "Verifique a conexão e a aba WhatsApp, reconecte se necessário e retome os envios "
+                "(os contatos já enviados aparecem desmarcados).",
             )
         elif self._failures:
             self._show_failures()

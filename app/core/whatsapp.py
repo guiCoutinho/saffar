@@ -154,6 +154,23 @@ class WhatsAppBot:
                 time.sleep(0.5)
         logger.warning("Não foi possível remover a pasta de sessão: %s", SESSION_DIR)
 
+    @staticmethod
+    def _wait_chat_or_invalid(page: Page, timeout_s: float = 20.0):
+        """Espera abrir o chat (retorna o campo de composição) ou detecta número
+        inválido (levanta erro). O que ocorrer primeiro decide o resultado."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            if page.query_selector(_SEL_INVALID_POPUP):
+                raise RuntimeError("Número não encontrado no WhatsApp.")
+            msg_box = page.query_selector(_SEL_COMPOSE_BOX)
+            if msg_box:
+                return msg_box
+            time.sleep(0.3)
+        # Estourou o tempo: última checagem do popup antes de reportar timeout
+        if page.query_selector(_SEL_INVALID_POPUP):
+            raise RuntimeError("Número não encontrado no WhatsApp.")
+        raise RuntimeError("Não foi possível abrir a conversa (WhatsApp Web lento ou número inválido).")
+
     def _do_send(self, page: Page, phone: str, message: str) -> None:
         phone_clean = to_wa_phone(phone)
 
@@ -166,13 +183,11 @@ class WhatsAppBot:
         except Exception:
             raise RuntimeError("Timeout ao navegar para o chat (conexão lenta ou WhatsApp Web travado).")
 
-        _pause(1.5, 3.0)
-
-        invalid = page.query_selector(_SEL_INVALID_POPUP)
-        if invalid:
-            raise RuntimeError("Número não encontrado no WhatsApp.")
-
-        msg_box = page.wait_for_selector(_SEL_COMPOSE_BOX, timeout=20_000)
+        # Aguarda o que aparecer primeiro: o campo de composição (número válido)
+        # ou o popup de número inválido. Um intervalo fixo era frágil — em
+        # conexão lenta o popup surgia depois da checagem única e o número
+        # inválido escapava, virando um timeout genérico do campo de mensagem.
+        msg_box = self._wait_chat_or_invalid(page, timeout_s=20.0)
 
         _pause(0.5, 1.0)
         msg_box.click()

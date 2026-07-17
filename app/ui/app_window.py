@@ -37,6 +37,9 @@ class AppWindow(ctk.CTk):
         self._data: Optional[ExcelData] = None
         self._excel_path: Optional[str] = None
         self._message: str = ""
+        # Estado exibido no rodapé; usado para só reconfigurar os labels quando muda
+        self._last_conn_state: Optional[bool] = None
+        self._last_sel_text: Optional[str] = None
         self._bot = WhatsAppBot()
         self.profile_store = ProfileStore()
 
@@ -99,17 +102,26 @@ class AppWindow(ctk.CTk):
         self._tab_connect.pack(fill="both", expand=True)
 
     def _poll_status(self):
+        # Reconfigura os labels só quando o valor muda: o polling roda a cada
+        # segundo e .configure() força redesenho mesmo sem alteração
         connected = self._bot.is_connected()
-        self._lbl_conn.configure(
-            text="● Conectado" if connected else "● Desconectado",
-            text_color=theme.GREEN_OK if connected else theme.RED_ERR,
-        )
+        if connected != self._last_conn_state:
+            self._lbl_conn.configure(
+                text="● Conectado" if connected else "● Desconectado",
+                text_color=theme.GREEN_OK if connected else theme.RED_ERR,
+            )
+            self._last_conn_state = connected
+
         total = len(self._tab_excel.contact_vars)
         if total:
             n = sum(1 for v in self._tab_excel.contact_vars.values() if v.get())
-            self._lbl_sel.configure(text=f"{n} de {total} contatos selecionados")
+            sel_text = f"{n} de {total} contatos selecionados"
         else:
-            self._lbl_sel.configure(text="Nenhum contato carregado")
+            sel_text = "Nenhum contato carregado"
+        if sel_text != self._last_sel_text:
+            self._lbl_sel.configure(text=sel_text)
+            self._last_sel_text = sel_text
+
         self.after(1000, self._poll_status)
 
     def _on_excel_loaded(self, data: ExcelData, path: str):

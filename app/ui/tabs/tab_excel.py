@@ -395,8 +395,10 @@ class TabExcel(ctk.CTkFrame):
         self.contact_vars: dict[str, tk.BooleanVar] = {}
         # normalized phone -> (name, raw_phone)
         self._contact_info: dict[str, tuple[str, str]] = {}
-        # all vars in display order (contact_vars may skip duplicates, this doesn't)
-        self._all_vars: list[tk.BooleanVar] = []
+        # Uma entrada por linha renderizada da tabela. Guarda os widgets da linha
+        # e o texto de busca para filtrar com grid/grid_remove sem recriar nada.
+        # {"widgets": [...], "text": str, "digits": str, "var": BooleanVar|None, "visible": bool}
+        self._row_records: list[dict] = []
         # columns chosen for display (set at import time)
         self._display_cols: List[str] = []
         # last loaded ExcelData (needed for inadimplentes filter)
@@ -496,8 +498,27 @@ class TabExcel(ctk.CTkFrame):
 
     def _apply_search(self):
         self._search_job = None
-        if self._excel_data is not None:
-            self._load_contacts(self._excel_data)
+        # Filtra as linhas já criadas (grid/grid_remove) em vez de reconstruir
+        # a lista — busca é só leitura e não deve tocar no banco nem recriar widgets
+        self._filter_rows()
+
+    def _filter_rows(self):
+        term = self._search_term()
+        term_digits = "".join(filter(str.isdigit, term))
+        for rec in self._row_records:
+            show = (
+                not term
+                or term in rec["text"]
+                or (bool(term_digits) and term_digits in rec["digits"])
+            )
+            if show and not rec["visible"]:
+                for w in rec["widgets"]:
+                    w.grid()  # restaura a posição lembrada pelo grid_remove
+                rec["visible"] = True
+            elif not show and rec["visible"]:
+                for w in rec["widgets"]:
+                    w.grid_remove()
+                rec["visible"] = False
 
     # ------------------------------------------------------------------
     # File handling
@@ -669,7 +690,7 @@ class TabExcel(ctk.CTkFrame):
         self._file_path = None
         self.contact_vars.clear()
         self._contact_info.clear()
-        self._all_vars.clear()
+        self._row_records = []
         for w in self._contacts_frame.winfo_children():
             w.destroy()
         for w in self._cols_frame.winfo_children():
@@ -701,17 +722,14 @@ class TabExcel(ctk.CTkFrame):
     # ------------------------------------------------------------------
 
     def _load_contacts(self, data: ExcelData):
-        # Preserva o estado de seleção entre recargas (busca, edição, remoção)
+        # Preserva o estado de seleção entre recargas (edição, remoção, filtro)
         prev_state = {p: v.get() for p, v in self.contact_vars.items()}
 
         for w in self._contacts_frame.winfo_children():
             w.destroy()
         self.contact_vars.clear()
         self._contact_info.clear()
-        self._all_vars.clear()
-
-        term = self._search_term()
-        term_digits = "".join(filter(str.isdigit, term))
+        self._row_records = []
 
         phone_col = data.phone_column
         display_cols = self._display_cols or ([phone_col] if phone_col else data.columns[:1])
@@ -727,8 +745,9 @@ class TabExcel(ctk.CTkFrame):
 
         # Header: grid row 0
         hdr_color = ("gray75", "gray25")
-        _cb_placeholder = ctk.CTkLabel(table, text="", width=_COL_CB, fg_color=hdr_color)
-        _cb_placeholder.grid(row=0, column=0, sticky="nsew", padx=(0, 0), pady=(0, 2))
+        ctk.CTkLabel(table, text="", width=_COL_CB, fg_color=hdr_color).grid(
+            row=0, column=0, sticky="nsew", padx=(0, 0), pady=(0, 2)
+        )
         for i, col in enumerate(display_cols):
             ctk.CTkLabel(
                 table, text=col, anchor="w",
@@ -739,8 +758,10 @@ class TabExcel(ctk.CTkFrame):
             font=ctk.CTkFont(weight="bold"), fg_color=hdr_color,
         ).grid(row=0, column=last_col, sticky="ew", padx=0, pady=(0, 2))
 
-        # Passo 1 — registra TODOS os contatos válidos (independente da busca):
-        # a seleção e o envio consideram a lista completa, não só o filtro visível
+        # Passo 1 — registra TODOS os contatos válidos e sincroniza o banco UMA
+        # única vez. A busca depois filtra em memória (grid/grid_remove), sem
+        # tocar no banco nem recriar widgets — antes o upsert+consulta rodava a
+        # cada tecla, o maior gargalo da tela.
         name_col = _detect_name_column(data.columns)
         contact_batch: list[tuple[str, str]] = []
         for row in data.rows:
@@ -757,63 +778,61 @@ class TabExcel(ctk.CTkFrame):
                     self._contact_info[norm] = (name, raw_phone)
         last_sent_map = profile_store.upsert_contacts_batch(contact_batch)
 
-        def _row_matches(name: str, raw_parts: list) -> bool:
-            if not term:
-                return True
-            if term in name.lower():
-                return True
-            for part in raw_parts:
-                if term in str(part).lower():
-                    return True
-            if term_digits:
-                for part in raw_parts:
-                    if term_digits in _normalize_phone(str(part)):
-                        return True
-            return False
-
-        # Passo 2 — renderiza apenas as linhas que casam com a busca
+        # Passo 2 — renderiza TODAS as linhas. O filtro de busca é aplicado no
+        # fim por _filter_rows, escondendo as que não casam via grid_remove.
         grid_row = 1
         for row in data.rows:
             raw_phone_cell = str(row.get(phone_col, "")).strip() if phone_col else ""
             name = str(row.get(name_col or "", "")).strip()
             row_bg = ("gray88", "gray17") if grid_row % 2 == 0 else ("gray82", "gray20")
 
-            if not _row_matches(name, _split_phones(raw_phone_cell) if raw_phone_cell else []):
-                continue
-
             if not raw_phone_cell:
-                self._add_invalid_row(table, grid_row, name, "", row, display_cols, phone_col)
+                self._row_records.append(
+                    self._add_invalid_row(table, grid_row, name, "", row, display_cols, phone_col)
+                )
                 grid_row += 1
                 continue
 
-            phone_parts = _split_phones(raw_phone_cell)
-            for raw_phone in phone_parts:
+            for raw_phone in _split_phones(raw_phone_cell):
                 norm_phone = _normalize_phone(raw_phone)
                 if not norm_phone or not _is_valid_phone(norm_phone):
-                    self._add_invalid_row(table, grid_row, name, raw_phone, row, display_cols, phone_col)
+                    self._row_records.append(
+                        self._add_invalid_row(table, grid_row, name, raw_phone, row, display_cols, phone_col)
+                    )
                     grid_row += 1
                     continue
 
                 last_sent_str = _format_last_sent(last_sent_map.get(norm_phone))
-
                 var = self.contact_vars[norm_phone]
-                self._all_vars.append(var)
 
+                widgets: list = []
                 cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, bg_color=row_bg)
                 cb.grid(row=grid_row, column=0, sticky="nsew", padx=(4, 0), pady=1)
+                widgets.append(cb)
 
                 for i, col in enumerate(display_cols):
                     val = str(row.get(col, "")).strip()
                     if col == phone_col:
                         val = _format_phone(norm_phone)
-                    ctk.CTkLabel(table, text=_truncate(val, 36), anchor="w", fg_color=row_bg).grid(
-                        row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1
-                    )
+                    lbl = ctk.CTkLabel(table, text=_truncate(val, 36), anchor="w", fg_color=row_bg)
+                    lbl.grid(row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1)
+                    widgets.append(lbl)
 
-                ctk.CTkLabel(table, text=last_sent_str, anchor="w", fg_color=row_bg).grid(
-                    row=grid_row, column=last_col, sticky="ew", padx=4, pady=1
-                )
+                last_lbl = ctk.CTkLabel(table, text=last_sent_str, anchor="w", fg_color=row_bg)
+                last_lbl.grid(row=grid_row, column=last_col, sticky="ew", padx=4, pady=1)
+                widgets.append(last_lbl)
+
+                self._row_records.append({
+                    "widgets": widgets,
+                    "text": f"{name} {raw_phone}".lower(),
+                    "digits": norm_phone,
+                    "var": var,
+                    "visible": True,
+                })
                 grid_row += 1
+
+        # Aplica o termo de busca atual (se houver) às linhas recém-criadas
+        self._filter_rows()
 
     def _add_invalid_row(
         self,
@@ -824,15 +843,17 @@ class TabExcel(ctk.CTkFrame):
         row_data: dict,
         display_cols: List[str],
         phone_col: Optional[str],
-    ) -> None:
-        """Render a contact with missing/invalid phone directly into the shared table frame."""
+    ) -> dict:
+        """Render a contact with missing/invalid phone; return its row record."""
         n = len(display_cols)
         last_col = n + 1
         row_bg = ("gray93", "gray18")
+        widgets: list = []
 
         var = tk.BooleanVar(value=False)
         cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, state="disabled", bg_color=row_bg)
         cb.grid(row=grid_row, column=0, sticky="nsew", padx=(4, 0), pady=1)
+        widgets.append(cb)
 
         phone_lbl: Optional[ctk.CTkLabel] = None
         for i, col in enumerate(display_cols):
@@ -841,28 +862,35 @@ class TabExcel(ctk.CTkFrame):
                 phone_text = raw_phone if raw_phone else "sem telefone"
                 phone_lbl = ctk.CTkLabel(table, text=phone_text, anchor="w", text_color="#E05252", fg_color=row_bg)
                 phone_lbl.grid(row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1)
+                widgets.append(phone_lbl)
             else:
                 val = _truncate(str(row_data.get(col, "")).strip(), 36)
-                ctk.CTkLabel(table, text=val, anchor="w", text_color="gray", fg_color=row_bg).grid(
-                    row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1
-                )
+                lbl = ctk.CTkLabel(table, text=val, anchor="w", text_color="gray", fg_color=row_bg)
+                lbl.grid(row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1)
+                widgets.append(lbl)
 
         if phone_lbl is None:
             phone_text = raw_phone if raw_phone else "sem telefone"
             phone_lbl = ctk.CTkLabel(table, text=phone_text, anchor="w", text_color="#E05252", fg_color=row_bg)
             phone_lbl.grid(row=grid_row, column=n, sticky="ew", padx=4, pady=1)
+            widgets.append(phone_lbl)
 
         edit_btn = ctk.CTkButton(
             table, text="Editar", width=80, height=24,
             fg_color=("gray70", "gray35"), hover_color=("gray60", "gray45"),
+            command=lambda: self._open_edit_phone(name, raw_phone, row_data, phone_col),
         )
         edit_btn.grid(row=grid_row, column=last_col, padx=4, pady=1, sticky="w")
-        edit_btn.configure(
-            command=lambda: self._open_edit_phone(
-                name, raw_phone, cb, var, phone_lbl, edit_btn, table, grid_row, last_col, row_bg,
-                row_data, phone_col,
-            )
-        )
+        widgets.append(edit_btn)
+
+        # var=None: linha sem telefone válido não entra no "selecionar todos"
+        return {
+            "widgets": widgets,
+            "text": f"{name} {raw_phone}".lower(),
+            "digits": _normalize_phone(raw_phone) if raw_phone else "",
+            "var": None,
+            "visible": True,
+        }
 
     @staticmethod
     def _update_row_phone(row_data: dict, phone_col: Optional[str], old_raw: str, new_norm: str) -> None:
@@ -886,14 +914,6 @@ class TabExcel(ctk.CTkFrame):
         self,
         name: str,
         raw_phone: str,
-        cb: ctk.CTkCheckBox,
-        var: tk.BooleanVar,
-        phone_lbl: ctk.CTkLabel,
-        edit_btn: ctk.CTkButton,
-        table: ctk.CTkFrame,
-        grid_row: int,
-        last_col: int,
-        row_bg: tuple,
         row_data: dict,
         phone_col: Optional[str],
     ) -> None:
@@ -905,48 +925,26 @@ class TabExcel(ctk.CTkFrame):
         norm_phone = dialog.result
         self._update_row_phone(row_data, phone_col, raw_phone, norm_phone)
         self.app.profile_store.upsert_contact(norm_phone, name)
-        last_sent_iso = self.app.profile_store.get_last_sent_at(norm_phone)
-        last_sent_str = _format_last_sent(last_sent_iso)
-
-        # Update phone label
-        phone_lbl.configure(text=_format_phone(norm_phone), text_color=("black", "white"))
-
-        # Replace edit button with last_sent label
-        edit_btn.grid_remove()
-        ctk.CTkLabel(table, text=last_sent_str, anchor="w", fg_color=row_bg).grid(
-            row=grid_row, column=last_col, sticky="ew", padx=4, pady=1
-        )
-
-        # Enable checkbox, update colors
-        var.set(True)
-        cb.configure(state="normal", variable=var)
-
-        # Normalize the row background to the alternating color
-        normal_bg = ("gray88", "gray17") if grid_row % 2 == 0 else ("gray82", "gray20")
-        cb.configure(bg_color=normal_bg)
-        phone_lbl.configure(fg_color=normal_bg)
-
-        self._all_vars.append(var)
-        if norm_phone not in self.contact_vars:
-            self.contact_vars[norm_phone] = var
-        self._contact_info[norm_phone] = (name, norm_phone)
-
-        # Update all other labels in this grid row to normal color
-        for widget in table.grid_slaves(row=grid_row):
-            if isinstance(widget, ctk.CTkLabel):
-                widget.configure(text_color=("black", "white"), fg_color=normal_bg)
+        # Reconstrói a lista: a linha corrigida vira um contato válido normal
+        # (checkbox habilitado, último envio). Editar telefone é raro, então
+        # reconstruir é mais simples e seguro do que remendar a linha no lugar.
+        if self._excel_data is not None:
+            self._load_contacts(self._excel_data)
 
     # ------------------------------------------------------------------
     # Selection helpers
     # ------------------------------------------------------------------
 
     def _select_all(self):
-        for var in self._all_vars:
-            var.set(True)
+        # Só as linhas visíveis (após a busca) e com telefone válido
+        for rec in self._row_records:
+            if rec["visible"] and rec["var"] is not None:
+                rec["var"].set(True)
 
     def _deselect_all(self):
-        for var in self._all_vars:
-            var.set(False)
+        for rec in self._row_records:
+            if rec["visible"] and rec["var"] is not None:
+                rec["var"].set(False)
 
     # ------------------------------------------------------------------
     # Public API

@@ -69,13 +69,20 @@ class ProfileStore:
                 normalized,
             )
         phones = [p for p, _ in normalized]
-        placeholders = ",".join("?" * len(phones))
+        # O SQLite limita o nº de parâmetros por query (999 em builds antigos);
+        # uma planilha grande estouraria o IN (...). Consulta em blocos.
+        result: dict[str, Optional[str]] = {}
         with self._lock:
-            rows = self._conn.execute(
-                f"SELECT phone, last_sent_at FROM contacts WHERE phone IN ({placeholders})",
-                phones,
-            ).fetchall()
-        return {r["phone"]: r["last_sent_at"] for r in rows}
+            for start in range(0, len(phones), 900):
+                chunk = phones[start:start + 900]
+                placeholders = ",".join("?" * len(chunk))
+                rows = self._conn.execute(
+                    f"SELECT phone, last_sent_at FROM contacts WHERE phone IN ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for r in rows:
+                    result[r["phone"]] = r["last_sent_at"]
+        return result
 
     def record_send(
         self,

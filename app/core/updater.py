@@ -29,8 +29,15 @@ class UpdateInfo:
 
 
 def _version_tuple(tag: str) -> tuple:
-    """'v1.2.3' -> (1, 2, 3); tolera prefixos e sufixos na tag."""
-    return tuple(int(n) for n in re.findall(r"\d+", tag)[:3])
+    """'v1.2.3' -> (1, 2, 3); tolera prefixos e sufixos na tag.
+
+    Sempre retorna 3 componentes (completa com zeros) para evitar comparações
+    entre tuplas de tamanhos diferentes — sem isso 'v1.2' viraria (1, 2) e
+    seria considerado *menor* que (1, 2, 0), disparando atualização indevida.
+    """
+    nums = [int(n) for n in re.findall(r"\d+", tag)[:3]]
+    nums += [0] * (3 - len(nums))
+    return tuple(nums)
 
 
 def check_for_update(timeout: float = 10.0) -> Optional[UpdateInfo]:
@@ -64,8 +71,16 @@ def download_update(info: UpdateInfo, timeout: float = 60.0) -> str:
     """Baixa o novo executável para a pasta do atual; retorna o caminho baixado."""
     target = sys.executable + ".new"
     req = urllib.request.Request(info.download_url, headers={"User-Agent": "Saffar"})
-    with urllib.request.urlopen(req, timeout=timeout) as resp, open(target, "wb") as out:
-        shutil.copyfileobj(resp, out)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp, open(target, "wb") as out:
+            shutil.copyfileobj(resp, out)
+    except Exception:
+        # Sem isso, um download interrompido deixaria um .exe.new de ~80MB órfão
+        try:
+            os.remove(target)
+        except OSError:
+            pass
+        raise
     return target
 
 
