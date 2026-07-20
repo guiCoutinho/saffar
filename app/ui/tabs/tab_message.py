@@ -1,9 +1,10 @@
 import tkinter as tk
 from tkinter import simpledialog, messagebox
-from typing import Callable, List, TYPE_CHECKING
+from typing import Callable, List, Optional, TYPE_CHECKING
 
 import customtkinter as ctk
 
+from app.core.excel_reader import render_message
 from app.ui import theme
 
 if TYPE_CHECKING:
@@ -24,6 +25,9 @@ class TabMessage(ctk.CTkFrame):
         self._store = profile_store
         self._rows: List[dict] = []
         self._preview_index = 0
+        # Corpo do template atualmente carregado; None quando nenhum está ativo.
+        # Usado para sinalizar "• alterado" quando o texto diverge.
+        self._loaded_tpl_body: Optional[str] = None
         self._build()
         self._refresh_template_list()
 
@@ -57,6 +61,10 @@ class TabMessage(ctk.CTkFrame):
 
         ctk.CTkButton(tpl_frame, text="Salvar", width=80, command=self._save_template, **theme.secondary()).pack(side="left", padx=(0, 4))
         ctk.CTkButton(tpl_frame, text="Excluir", width=80, command=self._delete_template, **theme.danger()).pack(side="left")
+        self._lbl_tpl_state = ctk.CTkLabel(
+            tpl_frame, text="", text_color=theme.ORANGE_WARN, font=ctk.CTkFont(size=12)
+        )
+        self._lbl_tpl_state.pack(side="left", padx=8)
 
         # Mensagem + contador de caracteres
         msg_header = ctk.CTkFrame(self, fg_color="transparent")
@@ -111,11 +119,14 @@ class TabMessage(ctk.CTkFrame):
 
     def _on_template_select(self, name: str):
         if name == _PLACEHOLDER_TEMPLATE:
+            self._loaded_tpl_body = None
+            self._notify()
             return
         templates = dict(self._store.list_templates())
         body = templates.get(name, "")
         self._textbox.delete("1.0", "end")
         self._textbox.insert("1.0", body)
+        self._loaded_tpl_body = body
         self._notify()
 
     def _save_template(self):
@@ -136,6 +147,8 @@ class TabMessage(ctk.CTkFrame):
         self._store.save_template(name.strip(), body)
         self._refresh_template_list()
         self._tpl_var.set(name.strip())
+        self._loaded_tpl_body = body
+        self._update_tpl_state()
 
     def _delete_template(self):
         name = self._tpl_var.get()
@@ -146,6 +159,8 @@ class TabMessage(ctk.CTkFrame):
             return
         self._store.delete_template(name)
         self._refresh_template_list()
+        self._loaded_tpl_body = None
+        self._update_tpl_state()
 
     # ------------------------------------------------------------------
     # Placeholders & message
@@ -181,6 +196,17 @@ class TabMessage(ctk.CTkFrame):
         self._on_message_change(msg)
         self._lbl_count.configure(text=f"{len(msg)} caracteres")
         self._update_preview(msg)
+        self._update_tpl_state()
+
+    def _update_tpl_state(self):
+        """Mostra '• alterado' quando o texto diverge do template carregado."""
+        name = self._tpl_var.get()
+        diverged = (
+            name != _PLACEHOLDER_TEMPLATE
+            and self._loaded_tpl_body is not None
+            and self.get_message() != self._loaded_tpl_body
+        )
+        self._lbl_tpl_state.configure(text="• alterado" if diverged else "")
 
     def _nav_preview(self, delta: int):
         if not self._rows:
@@ -194,9 +220,7 @@ class TabMessage(ctk.CTkFrame):
             self._lbl_preview.configure(text="Carregue uma planilha para ver o preview.")
             return
         row = self._rows[self._preview_index]
-        preview = template
-        for key, value in row.items():
-            preview = preview.replace(f"{{{{{key}}}}}", str(value))
+        preview = render_message(template, row)
         self._lbl_prev_pos.configure(text=f"{self._preview_index + 1} / {len(self._rows)}")
         self._lbl_preview.configure(text=preview or "—")
 

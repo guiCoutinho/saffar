@@ -67,6 +67,22 @@ class TabConnect(ctk.CTkFrame):
         self.after(0, lambda: self._btn_connect.configure(text="WhatsApp conectado ✓", state="disabled"))
         self.after(0, lambda: self._lbl_info.configure(text="Pronto para enviar mensagens."))
         self.after(0, lambda: self._btn_disconnect.pack(pady=(10, 0), before=self._lbl_info))
+        # A janela do Chromium abre maximizada e esconde o app; traz o app de
+        # volta para a frente para o usuário ver que já pode enviar.
+        self.after(0, self._bring_app_to_front)
+
+    def _bring_app_to_front(self):
+        top = self.winfo_toplevel()
+        try:
+            top.deiconify()
+            top.lift()
+            top.focus_force()
+            # Pisca em "topmost" por um instante para chamar atenção sem
+            # deixar a janela travada acima das demais.
+            top.attributes("-topmost", True)
+            top.after(300, lambda: top.attributes("-topmost", False))
+        except Exception:
+            pass
 
     def _on_error(self, msg: str):
         self.after(0, lambda: self._status_dot.configure(text="● Erro na conexão", text_color=theme.RED_ERR))

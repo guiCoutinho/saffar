@@ -59,6 +59,14 @@ class WhatsAppBot:
         on_success: Callable[[], None],
         on_error: Callable[[str], None],
     ) -> None:
+        # Se o worker já morreu (navegador fechado, erro fatal), falha na hora em
+        # vez de enfileirar uma tarefa que ninguém processaria — sem isso quem
+        # espera pelo callback ficaria travado até estourar o timeout.
+        with self._lock:
+            alive = self._worker is not None and self._worker.is_alive()
+        if not alive:
+            on_error("WhatsApp desconectado. Reconecte para enviar.")
+            return
         self._queue.put(("send", phone, message, on_success, on_error))
 
     def stop(self) -> None:
@@ -110,11 +118,23 @@ class WhatsAppBot:
 
         clear_session = False
         on_done: Optional[Callable] = None
+        last_health = time.monotonic()
 
         while True:
             try:
                 task = self._queue.get(timeout=1)
             except queue.Empty:
+                # Sem tarefas: checa periodicamente se o usuário fechou a janela
+                # do WhatsApp. Sem isso, is_connected() continuaria True para
+                # sempre e o rodapé mostraria "Conectado" enganosamente.
+                now = time.monotonic()
+                if now - last_health >= 3.0:
+                    last_health = now
+                    if self._page_closed(page):
+                        with self._lock:
+                            self._connected = False
+                        on_error("A janela do WhatsApp foi fechada. Reconecte para continuar.")
+                        break
                 continue
 
             if task[0] == "stop":
@@ -128,6 +148,13 @@ class WhatsAppBot:
                     on_success()
                 except Exception as e:
                     on_error_cb(str(e))
+                    # Se a falha foi porque a janela fechou, encerra o worker:
+                    # continuar só produziria falhas em cadeia.
+                    if self._page_closed(page):
+                        with self._lock:
+                            self._connected = False
+                        on_error("A janela do WhatsApp foi fechada. Reconecte para continuar.")
+                        break
 
         try:
             context.close()
@@ -140,6 +167,15 @@ class WhatsAppBot:
             self._clear_session_dir()
         if on_done:
             on_done()
+
+    @staticmethod
+    def _page_closed(page: Page) -> bool:
+        """True se a aba/navegador do WhatsApp foi fechado. Chamado só na thread
+        do worker (a API sync do Playwright não é thread-safe)."""
+        try:
+            return page.is_closed()
+        except Exception:
+            return True
 
     @staticmethod
     def _clear_session_dir() -> None:

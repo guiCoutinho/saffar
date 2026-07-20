@@ -124,10 +124,14 @@ class AppWindow(ctk.CTk):
 
         self.after(1000, self._poll_status)
 
-    def _on_excel_loaded(self, data: ExcelData, path: str):
+    def _on_excel_loaded(self, data: Optional[ExcelData], path: str):
         self._data = data
         self._excel_path = path
-        self._tab_message.set_columns(data.columns, data.rows)
+        if data is None:
+            # Lista limpa: zera também os placeholders/preview da aba Mensagem
+            self._tab_message.set_columns([], [])
+        else:
+            self._tab_message.set_columns(data.columns, data.rows)
 
     def _on_message_change(self, message: str):
         self._message = message
@@ -234,20 +238,37 @@ class AppWindow(ctk.CTk):
         bar = ctk.CTkProgressBar(win, mode="indeterminate", width=300)
         bar.pack()
         bar.start()
+        lbl_pct = ctk.CTkLabel(win, text="", text_color="gray", font=ctk.CTkFont(size=12))
+        lbl_pct.pack(pady=(6, 0))
 
-        state = {"done": False, "new_exe": None, "error": None}
+        state = {"done": False, "new_exe": None, "error": None, "fraction": None}
+
+        def on_progress(downloaded, total):
+            # A thread só grava o número; a UI é atualizada pelo poll (na thread
+            # principal). total=0 => tamanho desconhecido, mantém indeterminada.
+            state["fraction"] = (downloaded / total) if total else None
 
         def work():
             try:
-                state["new_exe"] = updater.download_update(info)
+                state["new_exe"] = updater.download_update(info, on_progress=on_progress)
             except Exception as e:
                 state["error"] = e
             state["done"] = True
 
         threading.Thread(target=work, daemon=True).start()
 
+        bar_mode = {"determinate": False}
+
         def poll():
             if not state["done"]:
+                frac = state["fraction"]
+                if frac is not None:
+                    if not bar_mode["determinate"]:
+                        bar.stop()
+                        bar.configure(mode="determinate")
+                        bar_mode["determinate"] = True
+                    bar.set(frac)
+                    lbl_pct.configure(text=f"{int(frac * 100)}%")
                 self.after(300, poll)
                 return
             if state["error"] is not None:
@@ -297,6 +318,9 @@ class AppWindow(ctk.CTk):
         ):
             return
         self._save_geometry()
+        # Sinaliza a thread de envio (se houver) para parar antes de fechar o
+        # banco — evita que ela tente gravar num ProfileStore já fechado.
+        self._tab_send.stop_for_shutdown()
         # Fecha o navegador e o banco antes de encerrar o processo — sem isso
         # o Chromium fica aberto órfão no Windows
         self._bot.shutdown(timeout=3)

@@ -403,6 +403,11 @@ class TabExcel(ctk.CTkFrame):
         self._display_cols: List[str] = []
         # last loaded ExcelData (needed for inadimplentes filter)
         self._excel_data: Optional[ExcelData] = None
+        # Renderização progressiva da lista: a criação de widgets é fatiada em
+        # blocos via after() para não congelar a UI com planilhas grandes.
+        # _render_token invalida os blocos pendentes quando uma nova carga começa.
+        self._render_job: Optional[str] = None
+        self._render_token: int = 0
 
         self._build()
 
@@ -617,6 +622,10 @@ class TabExcel(ctk.CTkFrame):
             phone_column=self._excel_data.phone_column,
         )
         self._display_cols = new_display_cols
+        # O conjunto filtrado passa a ser o conjunto de trabalho. Sem isso,
+        # adicionar/remover contato depois operaria sobre a lista completa
+        # (self._excel_data antigo) e descartaria o filtro.
+        self._excel_data = filtered_data
         self._load_contacts(filtered_data)
         # Notifica o app para que tab_send e tab_message usem os dados filtrados/enriquecidos
         self._on_loaded(filtered_data, self._file_path)
@@ -685,6 +694,7 @@ class TabExcel(ctk.CTkFrame):
             "Tem certeza que deseja remover todos os contatos da lista?",
         ):
             return
+        self._cancel_pending_render()
         self._excel_data = None
         self._display_cols = []
         self._file_path = None
@@ -698,6 +708,8 @@ class TabExcel(ctk.CTkFrame):
         self._lbl_file.configure(text="Nenhum arquivo selecionado (Ctrl+O)", text_color="gray")
         self._btn_inadimplentes.configure(state="disabled")
         self._search_entry.delete(0, "end")
+        # Zera o estado global (app._data, placeholders/preview da aba Mensagem)
+        self._on_loaded(None, "")
 
     def _show_columns(self, data: ExcelData):
         for w in self._cols_frame.winfo_children():
@@ -721,9 +733,22 @@ class TabExcel(ctk.CTkFrame):
     # Contact list
     # ------------------------------------------------------------------
 
+    def _cancel_pending_render(self) -> None:
+        """Invalida a renderização progressiva em andamento (nova carga/limpeza)."""
+        self._render_token += 1
+        if self._render_job is not None:
+            try:
+                self.after_cancel(self._render_job)
+            except Exception:
+                pass
+            self._render_job = None
+
     def _load_contacts(self, data: ExcelData):
         # Preserva o estado de seleção entre recargas (edição, remoção, filtro)
         prev_state = {p: v.get() for p, v in self.contact_vars.items()}
+
+        self._cancel_pending_render()
+        token = self._render_token
 
         for w in self._contacts_frame.winfo_children():
             w.destroy()
@@ -759,9 +784,9 @@ class TabExcel(ctk.CTkFrame):
         ).grid(row=0, column=last_col, sticky="ew", padx=0, pady=(0, 2))
 
         # Passo 1 — registra TODOS os contatos válidos e sincroniza o banco UMA
-        # única vez. A busca depois filtra em memória (grid/grid_remove), sem
-        # tocar no banco nem recriar widgets — antes o upsert+consulta rodava a
-        # cada tecla, o maior gargalo da tela.
+        # única vez. Feito de forma síncrona (barato) para que a seleção, a
+        # contagem no rodapé e o envio já estejam corretos mesmo antes de todas
+        # as linhas terem sido desenhadas.
         name_col = _detect_name_column(data.columns)
         contact_batch: list[tuple[str, str]] = []
         for row in data.rows:
@@ -778,8 +803,10 @@ class TabExcel(ctk.CTkFrame):
                     self._contact_info[norm] = (name, raw_phone)
         last_sent_map = profile_store.upsert_contacts_batch(contact_batch)
 
-        # Passo 2 — renderiza TODAS as linhas. O filtro de busca é aplicado no
-        # fim por _filter_rows, escondendo as que não casam via grid_remove.
+        # Passo 2 — monta as "specs" de cada linha (barato) preservando a mesma
+        # numeração de grid do render síncrono anterior. O desenho de widgets
+        # (caro) é fatiado em blocos por _render_chunk para não travar a UI.
+        specs: list[dict] = []
         grid_row = 1
         for row in data.rows:
             raw_phone_cell = str(row.get(phone_col, "")).strip() if phone_col else ""
@@ -787,52 +814,85 @@ class TabExcel(ctk.CTkFrame):
             row_bg = ("gray88", "gray17") if grid_row % 2 == 0 else ("gray82", "gray20")
 
             if not raw_phone_cell:
-                self._row_records.append(
-                    self._add_invalid_row(table, grid_row, name, "", row, display_cols, phone_col)
-                )
+                specs.append({"kind": "invalid", "grid_row": grid_row, "name": name,
+                              "raw_phone": "", "row": row})
                 grid_row += 1
                 continue
 
             for raw_phone in _split_phones(raw_phone_cell):
                 norm_phone = _normalize_phone(raw_phone)
                 if not norm_phone or not _is_valid_phone(norm_phone):
-                    self._row_records.append(
-                        self._add_invalid_row(table, grid_row, name, raw_phone, row, display_cols, phone_col)
-                    )
-                    grid_row += 1
-                    continue
-
-                last_sent_str = _format_last_sent(last_sent_map.get(norm_phone))
-                var = self.contact_vars[norm_phone]
-
-                widgets: list = []
-                cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, bg_color=row_bg)
-                cb.grid(row=grid_row, column=0, sticky="nsew", padx=(4, 0), pady=1)
-                widgets.append(cb)
-
-                for i, col in enumerate(display_cols):
-                    val = str(row.get(col, "")).strip()
-                    if col == phone_col:
-                        val = _format_phone(norm_phone)
-                    lbl = ctk.CTkLabel(table, text=_truncate(val, 36), anchor="w", fg_color=row_bg)
-                    lbl.grid(row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1)
-                    widgets.append(lbl)
-
-                last_lbl = ctk.CTkLabel(table, text=last_sent_str, anchor="w", fg_color=row_bg)
-                last_lbl.grid(row=grid_row, column=last_col, sticky="ew", padx=4, pady=1)
-                widgets.append(last_lbl)
-
-                self._row_records.append({
-                    "widgets": widgets,
-                    "text": f"{name} {raw_phone}".lower(),
-                    "digits": norm_phone,
-                    "var": var,
-                    "visible": True,
-                })
+                    specs.append({"kind": "invalid", "grid_row": grid_row, "name": name,
+                                  "raw_phone": raw_phone, "row": row})
+                else:
+                    specs.append({"kind": "valid", "grid_row": grid_row, "name": name,
+                                  "raw_phone": raw_phone, "norm_phone": norm_phone,
+                                  "row": row, "row_bg": row_bg,
+                                  "last_sent": _format_last_sent(last_sent_map.get(norm_phone))})
                 grid_row += 1
 
-        # Aplica o termo de busca atual (se houver) às linhas recém-criadas
-        self._filter_rows()
+        self._render_chunk(specs, 0, table, display_cols, phone_col, last_col, token)
+
+    _RENDER_CHUNK = 80
+
+    def _render_chunk(self, specs, start, table, display_cols, phone_col, last_col, token):
+        # Uma nova carga (ou limpeza) começou: descarta este render.
+        if token != self._render_token:
+            return
+        end = min(start + self._RENDER_CHUNK, len(specs))
+        for spec in specs[start:end]:
+            if spec["kind"] == "invalid":
+                rec = self._add_invalid_row(
+                    table, spec["grid_row"], spec["name"], spec["raw_phone"],
+                    spec["row"], display_cols, phone_col,
+                )
+            else:
+                rec = self._add_valid_row(table, spec, display_cols, phone_col, last_col)
+            self._row_records.append(rec)
+
+        if end < len(specs):
+            self._render_job = self.after(
+                1, lambda: self._render_chunk(specs, end, table, display_cols, phone_col, last_col, token)
+            )
+        else:
+            self._render_job = None
+            # Aplica o termo de busca atual (se houver) às linhas recém-criadas
+            self._filter_rows()
+
+    def _add_valid_row(self, table, spec, display_cols, phone_col, last_col) -> dict:
+        """Desenha uma linha de contato válido e devolve o registro da linha."""
+        grid_row = spec["grid_row"]
+        row = spec["row"]
+        name = spec["name"]
+        raw_phone = spec["raw_phone"]
+        norm_phone = spec["norm_phone"]
+        row_bg = spec["row_bg"]
+        var = self.contact_vars[norm_phone]
+
+        widgets: list = []
+        cb = ctk.CTkCheckBox(table, text="", variable=var, width=_COL_CB, bg_color=row_bg)
+        cb.grid(row=grid_row, column=0, sticky="nsew", padx=(4, 0), pady=1)
+        widgets.append(cb)
+
+        for i, col in enumerate(display_cols):
+            val = str(row.get(col, "")).strip()
+            if col == phone_col:
+                val = _format_phone(norm_phone)
+            lbl = ctk.CTkLabel(table, text=_truncate(val, 36), anchor="w", fg_color=row_bg)
+            lbl.grid(row=grid_row, column=i + 1, sticky="ew", padx=4, pady=1)
+            widgets.append(lbl)
+
+        last_lbl = ctk.CTkLabel(table, text=spec["last_sent"], anchor="w", fg_color=row_bg)
+        last_lbl.grid(row=grid_row, column=last_col, sticky="ew", padx=4, pady=1)
+        widgets.append(last_lbl)
+
+        return {
+            "widgets": widgets,
+            "text": f"{name} {raw_phone}".lower(),
+            "digits": norm_phone,
+            "var": var,
+            "visible": True,
+        }
 
     def _add_invalid_row(
         self,

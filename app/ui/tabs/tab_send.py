@@ -30,6 +30,7 @@ class TabSend(ctk.CTkFrame):
         self._sending = False
         self._paused = False
         self._aborted_timeout = False
+        self._disconnected_abort = False
         self._pause_event = threading.Event()
         self._pause_event.set()
         self._cancel_event = threading.Event()
@@ -140,6 +141,7 @@ class TabSend(ctk.CTkFrame):
         self._sending = True
         self._paused = False
         self._aborted_timeout = False
+        self._disconnected_abort = False
         self._pause_event.set()
         self._cancel_event.clear()
         # Estimativa por contato: intervalo médio + ~10s de navegação/digitação
@@ -169,6 +171,12 @@ class TabSend(ctk.CTkFrame):
             while not self._pause_event.is_set() and not self._cancel_event.is_set():
                 time.sleep(0.2)
             if self._cancel_event.is_set():
+                break
+
+            # Se o WhatsApp caiu no meio da campanha (janela fechada, sessão
+            # perdida), para em vez de acumular falhas contato a contato.
+            if not self._bot.is_connected():
+                self._disconnected_abort = True
                 break
 
             phone = norm_phone
@@ -240,6 +248,15 @@ class TabSend(ctk.CTkFrame):
     def is_sending(self) -> bool:
         return self._sending
 
+    def stop_for_shutdown(self) -> None:
+        """Sinaliza a thread de envio para encerrar quando o app está fechando.
+
+        Sem isso, a thread (daemon) seguiria rodando e poderia gravar no banco
+        depois que ele já foi fechado.
+        """
+        self._cancel_event.set()
+        self._pause_event.set()
+
     def _cancel(self):
         if not messagebox.askyesno("Cancelar envios", "Interromper os envios restantes?\nO envio em andamento será concluído."):
             return
@@ -272,10 +289,19 @@ class TabSend(ctk.CTkFrame):
                 "Verifique a conexão e a aba WhatsApp, reconecte se necessário e retome os envios "
                 "(os contatos já enviados aparecem desmarcados).",
             )
+        elif self._disconnected_abort:
+            messagebox.showwarning(
+                "WhatsApp desconectado",
+                "A conexão com o WhatsApp foi perdida (a janela do navegador pode ter sido "
+                f"fechada) e a campanha foi interrompida.\n\n{self._sent_ok} mensagem(ns) enviada(s) até aqui.\n\n"
+                "Reconecte na aba WhatsApp e retome os envios (os já enviados aparecem desmarcados).",
+            )
         elif self._failures:
             self._show_failures()
-        else:
+        elif self._sent_ok > 0:
             messagebox.showinfo("Concluído", f"Todos os envios foram realizados com sucesso!\nLog salvo em: {self._log_path}")
+        else:
+            messagebox.showinfo("Nada enviado", "Nenhum contato válido foi encontrado para envio.")
 
     def _toggle_pause(self):
         if not self._paused:

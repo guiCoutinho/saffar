@@ -16,6 +16,10 @@ class ProfileStore:
         self._conn.row_factory = sqlite3.Row
         # record_send roda na thread de envio enquanto a UI consulta o banco
         self._lock = threading.Lock()
+        # Ao fechar o app, o banco pode ser fechado enquanto a thread de envio
+        # ainda tenta gravar; este flag transforma essas chamadas em no-op em
+        # vez de estourar "Cannot operate on a closed database".
+        self._closed = False
         self._create_tables()
 
     def _create_tables(self) -> None:
@@ -42,15 +46,18 @@ class ProfileStore:
 
     def upsert_contact(self, phone: str, name: str) -> None:
         phone = normalize_phone(phone)
-        with self._lock, self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO contacts (phone, name, last_sent_at)
-                VALUES (?, ?, NULL)
-                ON CONFLICT(phone) DO UPDATE SET name = excluded.name
-                """,
-                (phone, name),
-            )
+        with self._lock:
+            if self._closed:
+                return
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO contacts (phone, name, last_sent_at)
+                    VALUES (?, ?, NULL)
+                    ON CONFLICT(phone) DO UPDATE SET name = excluded.name
+                    """,
+                    (phone, name),
+                )
 
     def upsert_contacts_batch(
         self, contacts: list[tuple[str, str]]
@@ -59,20 +66,25 @@ class ProfileStore:
         if not contacts:
             return {}
         normalized = [(normalize_phone(p), n) for p, n in contacts]
-        with self._lock, self._conn:
-            self._conn.executemany(
-                """
-                INSERT INTO contacts (phone, name, last_sent_at)
-                VALUES (?, ?, NULL)
-                ON CONFLICT(phone) DO UPDATE SET name = excluded.name
-                """,
-                normalized,
-            )
+        with self._lock:
+            if self._closed:
+                return {}
+            with self._conn:
+                self._conn.executemany(
+                    """
+                    INSERT INTO contacts (phone, name, last_sent_at)
+                    VALUES (?, ?, NULL)
+                    ON CONFLICT(phone) DO UPDATE SET name = excluded.name
+                    """,
+                    normalized,
+                )
         phones = [p for p, _ in normalized]
         # O SQLite limita o nº de parâmetros por query (999 em builds antigos);
         # uma planilha grande estouraria o IN (...). Consulta em blocos.
         result: dict[str, Optional[str]] = {}
         with self._lock:
+            if self._closed:
+                return result
             for start in range(0, len(phones), 900):
                 chunk = phones[start:start + 900]
                 placeholders = ",".join("?" * len(chunk))
@@ -93,25 +105,30 @@ class ProfileStore:
     ) -> None:
         phone = normalize_phone(phone)
         now = datetime.now(timezone.utc).isoformat()
-        with self._lock, self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO send_history (phone, sent_at, message_text, status, error_reason)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (phone, now, message_text, status, error_reason),
-            )
-            if status == "success":
+        with self._lock:
+            if self._closed:
+                return
+            with self._conn:
                 self._conn.execute(
                     """
-                    UPDATE contacts SET last_sent_at = ? WHERE phone = ?
+                    INSERT INTO send_history (phone, sent_at, message_text, status, error_reason)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (now, phone),
+                    (phone, now, message_text, status, error_reason),
                 )
+                if status == "success":
+                    self._conn.execute(
+                        """
+                        UPDATE contacts SET last_sent_at = ? WHERE phone = ?
+                        """,
+                        (now, phone),
+                    )
 
     def get_last_sent_at(self, phone: str) -> Optional[str]:
         phone = normalize_phone(phone)
         with self._lock:
+            if self._closed:
+                return None
             row = self._conn.execute(
                 "SELECT last_sent_at FROM contacts WHERE phone = ?", (phone,)
             ).fetchone()
@@ -124,20 +141,28 @@ class ProfileStore:
     # ------------------------------------------------------------------
 
     def save_template(self, name: str, body: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute(
-                "INSERT INTO templates (name, body) VALUES (?, ?) "
-                "ON CONFLICT(name) DO UPDATE SET body = excluded.body",
-                (name.strip(), body),
-            )
+        with self._lock:
+            if self._closed:
+                return
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO templates (name, body) VALUES (?, ?) "
+                    "ON CONFLICT(name) DO UPDATE SET body = excluded.body",
+                    (name.strip(), body),
+                )
 
     def delete_template(self, name: str) -> None:
-        with self._lock, self._conn:
-            self._conn.execute("DELETE FROM templates WHERE name = ?", (name,))
+        with self._lock:
+            if self._closed:
+                return
+            with self._conn:
+                self._conn.execute("DELETE FROM templates WHERE name = ?", (name,))
 
     def list_templates(self) -> list[tuple[str, str]]:
         """Return [(name, body), ...] ordered by name."""
         with self._lock:
+            if self._closed:
+                return []
             rows = self._conn.execute(
                 "SELECT name, body FROM templates ORDER BY name"
             ).fetchall()
@@ -145,4 +170,7 @@ class ProfileStore:
 
     def close(self) -> None:
         with self._lock:
+            if self._closed:
+                return
+            self._closed = True
             self._conn.close()

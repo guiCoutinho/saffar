@@ -7,7 +7,6 @@ um script que troca o executável depois que o app fecha.
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -67,13 +66,26 @@ def check_for_update(timeout: float = 10.0) -> Optional[UpdateInfo]:
     return UpdateInfo(version=tag.lstrip("vV"), download_url=asset["browser_download_url"])
 
 
-def download_update(info: UpdateInfo, timeout: float = 60.0) -> str:
-    """Baixa o novo executável para a pasta do atual; retorna o caminho baixado."""
+def download_update(info: UpdateInfo, timeout: float = 60.0, on_progress=None) -> str:
+    """Baixa o novo executável para a pasta do atual; retorna o caminho baixado.
+
+    `on_progress(baixado, total)` é chamado a cada bloco (total=0 quando o
+    servidor não informa Content-Length), permitindo exibir o percentual.
+    """
     target = sys.executable + ".new"
     req = urllib.request.Request(info.download_url, headers={"User-Agent": "Saffar"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp, open(target, "wb") as out:
-            shutil.copyfileobj(resp, out)
+            total = int(resp.headers.get("Content-Length") or 0)
+            downloaded = 0
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                out.write(chunk)
+                downloaded += len(chunk)
+                if on_progress is not None:
+                    on_progress(downloaded, total)
     except Exception:
         # Sem isso, um download interrompido deixaria um .exe.new de ~80MB órfão
         try:

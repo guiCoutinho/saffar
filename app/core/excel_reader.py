@@ -142,9 +142,21 @@ def parse_inadimplentes(file_path: str) -> Dict[str, UnidadeInadimplente]:
     return result
 
 
+_PLACEHOLDER_RE = re.compile(r"\{\{(.+?)\}\}")
+
+
 def render_message(template: str, row: Dict[str, str]) -> str:
-    message = template
-    for key, value in row.items():
-        safe = "" if value is None else str(value)
-        message = message.replace(f"{{{{{key}}}}}", safe)
-    return message
+    """Substitui {{coluna}} pelos valores da linha em UMA única passagem.
+
+    O passo único evita que um valor de célula que contenha literalmente
+    '{{outra_coluna}}' seja reinterpretado como placeholder numa iteração
+    seguinte. Placeholders sem coluna correspondente são mantidos como estão.
+    """
+    def _repl(m):
+        key = m.group(1)
+        if key in row:
+            value = row[key]
+            return "" if value is None else str(value)
+        return m.group(0)
+
+    return _PLACEHOLDER_RE.sub(_repl, template)

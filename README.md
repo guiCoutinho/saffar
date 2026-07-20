@@ -73,6 +73,19 @@ Na próxima abertura, os usuários com versões antigas serão avisados; ao acei
 
 ---
 
+## Testes
+
+Os módulos de lógica pura (normalização de telefone, parsing de inadimplentes,
+render de mensagem, comparação de versões) têm testes automatizados com a
+biblioteca padrão `unittest` — não é preciso instalar nada além das dependências
+do projeto. A partir da raiz do repositório:
+
+```bash
+python -m unittest discover -s tests -t .
+```
+
+---
+
 ## Observações
 
 - A sessão do WhatsApp é salva localmente após o primeiro login (não é necessário escanear o QR Code novamente)
