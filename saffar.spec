@@ -10,14 +10,20 @@ CUSTOMTKINTER_PATH = os.path.dirname(customtkinter.__file__)
 # na primeira execução. Sem isso, o driver não é encontrado no .exe.
 pw_datas, pw_binaries, pw_hiddenimports = collect_all('playwright')
 
+# Empacota o cacert.pem do certifi (fallback de CAs para a verificação TLS do
+# updater). Sem uma lista de CAs, o OpenSSL do .exe falha com "unable to get
+# local issuer certificate" em máquinas cujo store do Windows está incompleto.
+cf_datas, cf_binaries, cf_hiddenimports = collect_all('certifi')
+
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=pw_binaries,
+    binaries=pw_binaries + cf_binaries,
     datas=[
         (CUSTOMTKINTER_PATH, 'customtkinter'),
         ('assets/icon.ico', 'assets'),
         *pw_datas,
+        *cf_datas,
     ],
     hiddenimports=[
         'customtkinter',
@@ -28,7 +34,10 @@ a = Analysis(
         'openpyxl',
         'playwright',
         'playwright.sync_api',
+        'certifi',
+        'truststore',
         *pw_hiddenimports,
+        *cf_hiddenimports,
     ],
     hookspath=[],
     hooksconfig={},

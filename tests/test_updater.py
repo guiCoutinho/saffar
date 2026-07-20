@@ -1,7 +1,8 @@
-"""Testes de app.core.updater (comparação de versões)."""
+"""Testes de app.core.updater (comparação de versões, contexto SSL)."""
+import ssl
 import unittest
 
-from app.core.updater import _version_tuple
+from app.core.updater import _version_tuple, _ssl_context
 
 
 class VersionTupleTest(unittest.TestCase):
@@ -22,6 +23,17 @@ class VersionTupleTest(unittest.TestCase):
         self.assertLess(_version_tuple("1.2.0"), _version_tuple("1.10.0"))
         self.assertLessEqual(_version_tuple("1.2"), _version_tuple("1.2.0"))
         self.assertGreater(_version_tuple("v2.0.0"), _version_tuple("v1.9.9"))
+
+
+class SSLContextTest(unittest.TestCase):
+    def test_retorna_contexto_ssl(self):
+        # Deve devolver um SSLContext válido (truststore/certifi/padrão), nunca
+        # levantar — é o que garante que a verificação TLS do updater tenha CAs.
+        ctx = _ssl_context()
+        self.assertIsInstance(ctx, ssl.SSLContext)
+
+    def test_contexto_e_cacheado(self):
+        self.assertIs(_ssl_context(), _ssl_context())
 
 
 if __name__ == "__main__":

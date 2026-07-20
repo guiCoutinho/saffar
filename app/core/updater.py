@@ -7,6 +7,7 @@ um script que troca o executável depois que o app fecha.
 import json
 import os
 import re
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,37 @@ from app.version import __version__
 GITHUB_REPO = "guiCoutinho/saffar"
 RELEASES_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
 _API_LATEST = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+
+_ssl_ctx: Optional[ssl.SSLContext] = None
+
+
+def _ssl_context() -> ssl.SSLContext:
+    """Contexto SSL robusto para as requisições do updater no app empacotado.
+
+    No .exe do PyInstaller o Python usa OpenSSL, que no Windows NÃO consulta o
+    repositório de certificados do sistema por conta própria — então a CA raiz
+    do GitHub pode não ser encontrada e a verificação TLS falha com
+    "unable to get local issuer certificate", impedindo a checagem e o download
+    da atualização. Preferimos o `truststore` (usa o store nativo do Windows,
+    como o navegador; cobre também CAs corporativas) e caímos para o `certifi`
+    (lista de CAs empacotada) e, por último, o contexto padrão.
+    """
+    global _ssl_ctx
+    if _ssl_ctx is not None:
+        return _ssl_ctx
+    try:
+        import truststore
+        _ssl_ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        return _ssl_ctx
+    except Exception:
+        pass
+    try:
+        import certifi
+        _ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        return _ssl_ctx
+    except Exception:
+        _ssl_ctx = ssl.create_default_context()
+        return _ssl_ctx
 
 
 @dataclass
@@ -52,7 +84,7 @@ def check_for_update(timeout: float = 10.0) -> Optional[UpdateInfo]:
         _API_LATEST,
         headers={"Accept": "application/vnd.github+json", "User-Agent": "Saffar"},
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp:
         data = json.load(resp)
     tag = str(data.get("tag_name") or "")
     if not tag or _version_tuple(tag) <= _version_tuple(__version__):
@@ -75,7 +107,7 @@ def download_update(info: UpdateInfo, timeout: float = 60.0, on_progress=None) -
     target = sys.executable + ".new"
     req = urllib.request.Request(info.download_url, headers={"User-Agent": "Saffar"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp, open(target, "wb") as out:
+        with urllib.request.urlopen(req, timeout=timeout, context=_ssl_context()) as resp, open(target, "wb") as out:
             total = int(resp.headers.get("Content-Length") or 0)
             downloaded = 0
             while True:
