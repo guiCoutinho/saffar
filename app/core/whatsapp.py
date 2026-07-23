@@ -12,10 +12,19 @@ from app.core.phone_utils import to_wa_phone
 
 SESSION_DIR = os.path.join(os.environ.get("APPDATA", "."), "Saffar", "session")
 
-# O WhatsApp Web já removeu atributos data-testid em atualizações passadas.
-# Cada seletor tem um fallback estrutural para sobreviver a essas mudanças.
+# O WhatsApp Web já removeu atributos data-testid e reestruturou o <footer> em
+# atualizações passadas. Cada seletor tem fallbacks estruturais para sobreviver
+# a essas mudanças. O sinal mais estável do campo de mensagem é ele estar dentro
+# do painel da conversa aberta (#main) — a caixa de busca fica fora, no
+# #pane-side, então nunca é confundida com o campo de digitação.
 _SEL_CHAT_LIST = '[data-testid="chat-list"], #pane-side'
-_SEL_COMPOSE_BOX = '[data-testid="conversation-compose-box-input"], footer div[contenteditable="true"]'
+_SEL_COMPOSE_BOX = (
+    '#main footer div[contenteditable="true"], '
+    '#main div[contenteditable="true"][role="textbox"], '
+    '#main div[contenteditable="true"], '
+    'footer div[contenteditable="true"], '
+    '[data-testid="conversation-compose-box-input"]'
+)
 _SEL_INVALID_POPUP = '[data-testid="popup-contents"], div[data-animate-modal-popup="true"]'
 
 logger = logging.getLogger(__name__)
@@ -191,6 +200,20 @@ class WhatsAppBot:
         logger.warning("Não foi possível remover a pasta de sessão: %s", SESSION_DIR)
 
     @staticmethod
+    def _find_compose_box(page: Page):
+        """Localiza o campo de digitação da conversa aberta.
+
+        Tenta os seletores conhecidos e, se todos falharem (o WhatsApp Web muda o
+        DOM com frequência), cai no último contenteditable dentro do #main — a
+        busca fica no #pane-side, fora do #main, então esse fallback nunca acerta
+        a caixa de busca por engano."""
+        box = page.query_selector(_SEL_COMPOSE_BOX)
+        if box:
+            return box
+        boxes = page.query_selector_all('#main div[contenteditable="true"]')
+        return boxes[-1] if boxes else None
+
+    @staticmethod
     def _wait_chat_or_invalid(page: Page, timeout_s: float = 20.0):
         """Espera abrir o chat (retorna o campo de composição) ou detecta número
         inválido (levanta erro). O que ocorrer primeiro decide o resultado."""
@@ -198,7 +221,7 @@ class WhatsAppBot:
         while time.monotonic() < deadline:
             if page.query_selector(_SEL_INVALID_POPUP):
                 raise RuntimeError("Número não encontrado no WhatsApp.")
-            msg_box = page.query_selector(_SEL_COMPOSE_BOX)
+            msg_box = WhatsAppBot._find_compose_box(page)
             if msg_box:
                 return msg_box
             time.sleep(0.3)
