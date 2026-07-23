@@ -83,6 +83,46 @@ class ParseInadimplentesTest(unittest.TestCase):
         self.assertEqual(result["A303"].competencias, ["03/2024"])
         self.assertEqual(result["A303"].total, "300")
 
+    def test_parse_unidade_com_espacos(self):
+        # Unidades com bloco/espaços, ex.: "08 B Escandinavia".
+        path = self._write_xlsx([
+            ["08 B Escandinavia - João Silva", "", ""],
+            ["Competência", "Valor", "Total"],
+            ["01/2024", "100", ""],
+            ["Total", "", "100"],
+            ["12 A Nórdico - Maria", "", ""],
+            ["Competência", "Valor", "Total"],
+            ["02/2024", "200", ""],
+            ["Total", "", "200"],
+        ])
+        result = parse_inadimplentes(path)
+
+        # normalize_unidade remove espaços e zeros à esquerda: "08 B Escandinavia" -> "8BESCANDINAVIA"
+        self.assertEqual(set(result), {"8BESCANDINAVIA", "12ANORDICO"})
+        self.assertEqual(result["8BESCANDINAVIA"].competencias, ["01/2024"])
+        self.assertEqual(result["8BESCANDINAVIA"].total, "100")
+        self.assertEqual(result["12ANORDICO"].total, "200")
+
+    def test_unidade_com_espacos_bate_com_contato(self):
+        # A unidade do relatório e a do cadastro normalizam para o mesmo valor,
+        # independentemente de espaços, zeros à esquerda e maiúsculas/minúsculas.
+        self.assertEqual(
+            normalize_unidade("08 B Escandinavia"),
+            normalize_unidade("8 b escandinavia"),
+        )
+
+    def test_titulo_sem_digito_nao_e_unidade(self):
+        # Linha de título (sem dígito antes do traço) não deve virar unidade.
+        path = self._write_xlsx([
+            ["Relatório de Inadimplência - Condomínio", "", ""],
+            ["302 - João", "", ""],
+            ["Competência", "Valor", "Total"],
+            ["01/2024", "100", ""],
+            ["Total", "", "100"],
+        ])
+        result = parse_inadimplentes(path)
+        self.assertEqual(set(result), {"302"})
+
     def test_arquivo_vazio(self):
         path = self._write_xlsx([])
         with self.assertRaises(ValueError):

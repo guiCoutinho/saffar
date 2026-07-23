@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import pandas as pd
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
@@ -56,27 +57,43 @@ class UnidadeInadimplente:
     total: str = ""
 
 
+# Identificador da unidade: um ou mais "tokens" (letras, dígitos, acentos)
+# ligados por espaço, traço, ponto ou barra. Cobre "302", "A-302", "302-B",
+# "BL1-101" e também formatos com espaços/bloco como "08 B Escandinavia".
+# O separador interno é UM espaço (ou um traço/ponto/barra) por vez, de modo
+# que um traço-com-espaço ao redor (" - ") nunca é engolido pela unidade e
+# permanece disponível como divisor entre unidade e nome.
+_UNIT_TOKEN = r'\w+(?:(?:\s+|[-./])\w+)*'
+
 # Linha de cabeçalho de unidade no relatório: "302 - Nome", "A-302 - Nome",
-# "302-B - Nome" etc. O separador precisa de espaço em pelo menos um lado
-# para não confundir com o traço interno da unidade (ex.: "A-302").
+# "302-B - Nome", "08 B Escandinavia - Nome" etc. O separador entre unidade e
+# nome precisa de espaço em pelo menos um lado para não confundir com o traço
+# interno da unidade (ex.: "A-302"), que nunca tem espaço ao redor.
 _UNIT_HEADER_RE = re.compile(
-    r'^([A-Za-z0-9]+(?:-[A-Za-z0-9]+)*?)(?:\s+-\s*|\s*-\s+)(.+)'
+    r'^(' + _UNIT_TOKEN + r')(?:\s+-\s*|\s*-\s+)(.+)'
 )
 # Formato antigo, apenas dígitos, aceito mesmo sem espaços ("302-Nome").
 _UNIT_HEADER_NUM_RE = re.compile(r'^(\d{3,6})\s*-\s*(.+)')
 
 
 def _match_unit_header(text: str) -> Optional[re.Match]:
+    # Exige ao menos um dígito na unidade (descarta títulos/frases) e limita o
+    # tamanho para não capturar linhas de texto longas que tenham um " - ".
     m = _UNIT_HEADER_RE.match(text)
-    if m and any(ch.isdigit() for ch in m.group(1)) and len(m.group(1)) <= 12:
+    if m and any(ch.isdigit() for ch in m.group(1)) and len(m.group(1)) <= 40:
         return m
     return _UNIT_HEADER_NUM_RE.match(text)
 
 
 def normalize_unidade(value: str) -> str:
-    """Normaliza a unidade para comparação: maiúsculas, sem espaços ou
-    separadores e sem zeros à esquerda ("a - 0302" -> "A302")."""
-    value = re.sub(r'[\s\-./]', '', str(value)).upper()
+    """Normaliza a unidade para comparação: sem acentos, maiúsculas, sem
+    espaços ou separadores e sem zeros à esquerda ("a - 0302" -> "A302",
+    "08 B Escandinávia" -> "8BESCANDINAVIA"). Remover acentos evita que uma
+    grafia com acento no relatório e outra sem acento no cadastro (ou o
+    contrário) deixem de casar."""
+    value = unicodedata.normalize("NFKD", str(value))
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = re.sub(r'[\s\-./]', '', value).upper()
     return re.sub(r'\d+', lambda m: m.group(0).lstrip('0') or '0', value)
 
 
