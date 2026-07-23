@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 from datetime import datetime, timezone
 from tkinter import filedialog, messagebox
@@ -64,6 +65,75 @@ def _format_last_sent(iso: Optional[str]) -> str:
         return dt.strftime("%d/%m/%Y %H:%M")
     except Exception:
         return "nunca"
+
+
+# ---------------------------------------------------------------------------
+# Threading helper
+# ---------------------------------------------------------------------------
+
+def run_in_thread(widget, work: Callable[[], None], on_done: Callable[[], None]) -> None:
+    """Roda `work` numa thread de fundo e chama `on_done` na thread da UI.
+
+    A leitura de planilhas grandes com pandas/openpyxl é pesada; feita na thread
+    principal ela bloqueia o event loop do Tk e o Windows marca a janela como
+    "Não Responde". Rodando em uma thread separada, a thread principal volta ao
+    event loop e a janela continua respondendo (repintando, movendo, animando o
+    progresso) enquanto a leitura acontece. O resultado é entregue de volta na
+    thread da UI por polling via after() — Tk não é thread-safe, então nada de
+    tocar em widgets dentro de `work`.
+    """
+    t = threading.Thread(target=work, daemon=True)
+    t.start()
+
+    def poll():
+        try:
+            if not widget.winfo_exists():
+                return
+        except Exception:
+            return
+        if t.is_alive():
+            widget.after(50, poll)
+        else:
+            on_done()
+
+    widget.after(50, poll)
+
+
+class LoadingDialog(ctk.CTkToplevel):
+    """Modal simples com barra de progresso indeterminada exibido durante
+    operações demoradas (leitura de planilha)."""
+
+    def __init__(self, master, text: str = "Carregando..."):
+        super().__init__(master)
+        self.title("Aguarde")
+        self.resizable(False, False)
+        # Impede fechar pelo X: a operação em andamento precisa concluir
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        self._lbl = ctk.CTkLabel(self, text=text, font=ctk.CTkFont(size=13))
+        self._lbl.pack(padx=40, pady=(26, 12))
+        self._bar = ctk.CTkProgressBar(self, mode="indeterminate", width=300)
+        self._bar.pack(padx=40, pady=(0, 26))
+        self._bar.start()
+
+        self.grab_set()
+        self.after(50, self._center)
+
+    def set_text(self, text: str) -> None:
+        self._lbl.configure(text=text)
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+
+    def close(self) -> None:
+        try:
+            self._bar.stop()
+        except Exception:
+            pass
+        self.destroy()
 
 
 # ---------------------------------------------------------------------------
@@ -148,10 +218,27 @@ class ExcelImportDialog(ctk.CTkToplevel):
         ctk.CTkButton(btn_row, text="Importar", width=120, command=self._confirm).pack(side="right")
 
     def _load_preview(self):
-        try:
-            self._raw_rows = preview_excel(self._file_path, nrows=15)
-        except Exception as e:
-            messagebox.showerror("Erro", str(e), parent=self)
+        # Placeholder enquanto a prévia carrega numa thread (arquivos grandes
+        # podem demorar; sem isso o diálogo abriria congelado).
+        for w in self._preview_frame.winfo_children():
+            w.destroy()
+        ctk.CTkLabel(
+            self._preview_frame, text="Carregando prévia...", text_color="gray"
+        ).pack(padx=12, pady=20)
+
+        self._preview_error: Optional[Exception] = None
+
+        def work():
+            try:
+                self._raw_rows = preview_excel(self._file_path, nrows=15)
+            except Exception as e:  # reportado na thread da UI em _preview_done
+                self._preview_error = e
+
+        run_in_thread(self, work, self._preview_done)
+
+    def _preview_done(self):
+        if self._preview_error is not None:
+            messagebox.showerror("Erro", str(self._preview_error), parent=self)
             self.destroy()
             return
         self._render_preview()
@@ -541,11 +628,27 @@ class TabExcel(ctk.CTkFrame):
             return  # user cancelled
 
         header_row, phone_col, display_cols = dialog.result
-        # Planilhas grandes travam a UI por alguns segundos; sinaliza espera
-        self.configure(cursor="watch")
-        self.update_idletasks()
-        try:
-            data = load_excel(path, header_row=header_row, phone_column=phone_col)
+        # A leitura da planilha (pandas/openpyxl) é pesada e roda numa thread
+        # para não congelar a UI ("Não Responde") em arquivos grandes. Um modal
+        # com progresso indeterminado indica o carregamento; o resultado é
+        # aplicado de volta na thread da UI em finish().
+        loading = LoadingDialog(self, "Carregando planilha...")
+        result: dict = {}
+
+        def work():
+            try:
+                result["data"] = load_excel(
+                    path, header_row=header_row, phone_column=phone_col
+                )
+            except Exception as e:  # reportado na thread da UI em finish()
+                result["error"] = e
+
+        def finish():
+            loading.close()
+            if "error" in result:
+                messagebox.showerror("Erro ao abrir arquivo", str(result["error"]))
+                return
+            data = result["data"]
             self._file_path = path
             self._display_cols = display_cols
             self._excel_data = data
@@ -554,10 +657,8 @@ class TabExcel(ctk.CTkFrame):
             self._load_contacts(data)
             self._on_loaded(data, path)
             self._btn_inadimplentes.configure(state="normal")
-        except Exception as e:
-            messagebox.showerror("Erro ao abrir arquivo", str(e))
-        finally:
-            self.configure(cursor="")
+
+        run_in_thread(self, work, finish)
 
     def _import_inadimplentes(self):
         if self._excel_data is None:

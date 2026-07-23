@@ -13,7 +13,32 @@ class ExcelData:
 
 
 def preview_excel(file_path: str, nrows: int = 15) -> List[List[str]]:
-    """Return the first `nrows` raw rows (no header assumed) as lists of strings."""
+    """Return the first `nrows` raw rows (no header assumed) as lists of strings.
+
+    Para .xlsx usa o modo read_only do openpyxl, que varre apenas as primeiras
+    linhas sem carregar a planilha inteira na memória. O pandas (openpyxl por
+    baixo) sempre lê o arquivo todo, mesmo com `nrows`, o que faz a abertura da
+    prévia travar em planilhas grandes. Cai no pandas para .xls ou se algo der
+    errado no caminho rápido.
+    """
+    if file_path.lower().endswith(".xlsx"):
+        try:
+            from openpyxl import load_workbook
+
+            wb = load_workbook(file_path, read_only=True, data_only=True)
+            try:
+                ws = wb.active
+                rows: List[List[str]] = []
+                for raw in ws.iter_rows(values_only=True):
+                    rows.append(["" if c is None else str(c) for c in raw])
+                    if len(rows) >= nrows:
+                        break
+                return rows
+            finally:
+                wb.close()
+        except Exception:
+            pass  # formato inesperado/corrompido: tenta o caminho do pandas
+
     df = pd.read_excel(file_path, header=None, nrows=nrows, dtype=str)
     df = df.fillna("")
     return [list(row) for row in df.itertuples(index=False, name=None)]
