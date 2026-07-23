@@ -214,21 +214,56 @@ class WhatsAppBot:
         return boxes[-1] if boxes else None
 
     @staticmethod
+    def _is_invalid_number_popup(page: Page) -> bool:
+        """True somente se o modal aberto for o de 'número inválido'.
+
+        O WhatsApp Web exibe modais transitórios durante o carregamento da
+        conversa (spinners, avisos), e o seletor de popup casa com qualquer modal
+        animado. Reagir a qualquer modal marcava número válido como inválido antes
+        de a conversa abrir. Aqui confirmamos pelo texto do modal — que menciona
+        que o número é inválido — antes de concluir."""
+        popup = page.query_selector(_SEL_INVALID_POPUP)
+        if not popup:
+            return False
+        try:
+            text = (popup.inner_text() or "").lower()
+        except Exception:
+            return False
+        # Cobre PT ("inválido"/"não é válido") e EN ("invalid").
+        return any(h in text for h in ("inválid", "invalid", "não é válido", "not valid"))
+
+    @staticmethod
     def _wait_chat_or_invalid(page: Page, timeout_s: float = 20.0):
         """Espera abrir o chat (retorna o campo de composição) ou detecta número
         inválido (levanta erro). O que ocorrer primeiro decide o resultado."""
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
-            if page.query_selector(_SEL_INVALID_POPUP):
-                raise RuntimeError("Número não encontrado no WhatsApp.")
+            # Prioriza o sucesso: se a conversa abriu, modais transitórios de
+            # carregamento não importam.
             msg_box = WhatsAppBot._find_compose_box(page)
             if msg_box:
                 return msg_box
+            if WhatsAppBot._is_invalid_number_popup(page):
+                raise RuntimeError("Número não encontrado no WhatsApp.")
             time.sleep(0.3)
         # Estourou o tempo: última checagem do popup antes de reportar timeout
-        if page.query_selector(_SEL_INVALID_POPUP):
+        if WhatsAppBot._is_invalid_number_popup(page):
             raise RuntimeError("Número não encontrado no WhatsApp.")
-        raise RuntimeError("Não foi possível abrir a conversa (WhatsApp Web lento ou número inválido).")
+        # Diagnóstico: se havia algum modal aberto (não reconhecido como
+        # "inválido"), inclui um trecho do texto no erro para facilitar depurar
+        # mudanças futuras do WhatsApp Web pelo log de falhas.
+        extra = ""
+        popup = page.query_selector(_SEL_INVALID_POPUP)
+        if popup:
+            try:
+                txt = " ".join((popup.inner_text() or "").split())
+                if txt:
+                    extra = f" [modal: {txt[:80]}]"
+            except Exception:
+                pass
+        raise RuntimeError(
+            "Não foi possível abrir a conversa (WhatsApp Web lento ou número inválido)." + extra
+        )
 
     def _do_send(self, page: Page, phone: str, message: str) -> None:
         phone_clean = to_wa_phone(phone)
